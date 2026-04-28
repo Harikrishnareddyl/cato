@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Cato</h1>
-  <p align="center">Portable sandbox for secure command execution<br/>Kernel-enforced isolation. One config file. Works for humans and AI agents alike.</p>
+  <p align="center">Agent-agnostic sandbox. One config file, any process, anywhere.</p>
   <p align="center"><strong>Research Preview</strong> — macOS only. Feedback welcome.</p>
   <p align="center">
     <a href="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml"><img src="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -14,9 +14,107 @@
 
 ---
 
-> **Research Preview.** This is an early release exploring OS-level sandboxing for development workflows. macOS only (Apple Silicon + Intel). Linux support planned. Expect rough edges — [feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
+> **Research Preview.** Early release exploring portable, provider-independent sandboxing for development workflows. macOS only (Apple Silicon + Intel). Linux planned. [Feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
 
-Drop a `.cato.toml` in your project, run `cato run`, and everything inside is locked down at the OS level. No process can read your secrets, escape the workspace, or reach unauthorized networks — enforced by the macOS kernel, not by cooperation.
+## The problem
+
+AI agents are becoming the primary way developers write code. Each agent provider has its own sandbox approach — different configs, different formats, different tools. Switch agents, redo your security setup. Use multiple agents, manage multiple boundary systems.
+
+Beyond agents: build scripts, npm packages, downloaded code — anything you run has your full permissions. You either set up Docker (heavy) or trust everything (risky).
+
+## What Cato does
+
+One config file. Any process. Kernel-enforced boundaries.
+
+```bash
+cd my-project
+cato run
+```
+
+```
+🔒 $ cat .env              → Operation not permitted
+🔒 $ curl https://evil.com → blocked
+🔒 $ ls ~/Documents        → invisible
+🔒 $ echo $API_KEY         → available (injected)
+🔒 $ node app.js           → works fine
+```
+
+The `.cato.toml` defines what's allowed. The OS kernel enforces it. Doesn't matter what's inside — Claude, Codex, Cursor, a bash script, a human. Same rules, same enforcement.
+
+## Why this approach
+
+Today, session-level sandboxing exists — but it's fragmented. Each tool has its own:
+
+- Codex has `.codex/config.toml` (works only with Codex)
+- Claude Code has `.claude/settings.json` (works only with Claude)
+- Cloud sandboxes (E2B, Modal, Daytona) require their infrastructure
+- SandVault requires macOS user account setup
+
+If you use multiple agents, or switch between them, or want your rules to work in CI and containers too — you're managing multiple systems.
+
+Cato's approach: **one config that works with anything, anywhere.**
+
+| | Provider-specific configs | Cloud sandboxes | Cato |
+|---|---|---|---|
+| Works with any agent | No | Partially | Yes |
+| Works locally | Yes | No (cloud) | Yes |
+| Works in containers | N/A | N/A (is the container) | Yes |
+| Works in CI | Varies | Requires setup | Yes |
+| Config travels with repo | Yes (per-provider) | No | Yes |
+| No platform dependency | No (tied to one agent) | No (their infra) | Yes |
+
+## Use cases
+
+**Run any AI agent with boundaries:**
+```bash
+cato run -- claude "refactor the auth system"
+cato run -- codex "add tests for the API"
+cato run -- node my-custom-agent.js
+# Same .cato.toml, same rules, regardless of agent
+```
+
+**Protect against malicious dependencies:**
+```bash
+cato run -- npm install
+# Postinstall scripts can't read ~/.ssh or exfiltrate data
+```
+
+**Isolate secrets between projects:**
+```bash
+cd project-a && cato run    # gets only project-a's secrets
+cd project-b && cato run    # gets only project-b's secrets
+```
+
+**Restrict network access:**
+```bash
+# .cato.toml: network = ["registry.npmjs.org", "github.com"]
+cato run -- npm test
+# Nothing reaches production APIs or unknown servers
+```
+
+**Portable team rules:**
+```bash
+# .cato.toml is in git — new team member gets same boundaries instantly
+git clone repo && cd repo && cato run
+```
+
+## Works anywhere
+
+Cato is a layer, not infrastructure. Add it to any environment:
+
+```bash
+# Locally
+cato run -- claude "fix the tests"
+
+# In CI
+- run: cato init --minimal && cato run -- npm test
+
+# Inside any container (Docker, E2B, Modal, etc.)
+RUN npm install -g cato-cli
+CMD ["cato", "run", "--", "node", "agent.js"]
+```
+
+Same `.cato.toml`, same enforcement, regardless of where it runs.
 
 ## Install
 
@@ -35,80 +133,42 @@ Pre-built binaries on [Releases](https://github.com/Harikrishnareddyl/cato/relea
 cd my-project
 cato init                        # creates .cato.toml
 cato tool add node git python3   # register tools (once per machine)
-cato secret put ANTHROPIC_API_KEY  # store secrets (once per machine)
+cato secret put API_KEY          # store secrets (once per machine)
 cato run                         # enter sandbox
 ```
-
-Inside the sandbox:
-
-```
-🔒 my-project $ cat .env
-cat: .env: Operation not permitted          # kernel blocks it
-
-🔒 my-project $ ls ~/Documents
-ls: Operation not permitted                 # home dir invisible
-
-🔒 my-project $ curl https://evil.com
-000                                         # network blocked
-
-🔒 my-project $ echo $ANTHROPIC_API_KEY
-sk-ant-...                                  # secrets injected as env vars
-
-🔒 my-project $ node app.js
-listening on :3000                           # normal work, just safe
-
-🔒 my-project $ exit
-```
-
-## How it works
-
-```
-You run `cato run` in your project directory
-  → Cato reads .cato.toml (committed to git, shared with your team)
-  → Generates a macOS Seatbelt profile: deny everything, allow only what's needed
-  → Starts a network proxy for domain filtering
-  → Enters sandbox-exec with your shell
-  → Everything inside is kernel-enforced — no process can bypass it
-```
-
-The sandbox is the same whether a human or an AI agent is inside. `cato run -- claude "review this code"` gives Claude the same restrictions as a developer typing commands.
-
-## What's protected
-
-| Layer | How | What |
-|-------|-----|------|
-| **Filesystem** | Deny-default Seatbelt profile | Only workspace + /tmp writable. Home dir invisible. System dirs read-only. |
-| **Secrets** | `deny_read` patterns | `.env`, `*.pem`, `*.key`, credentials — blocked at kernel level, even from Python/Node |
-| **Network** | Localhost-only + proxy filter | Only domains in your allow list are reachable. Everything else refused. |
-| **Config** | Write-protected | `.cato.toml` can't be modified from inside the sandbox |
-| **Tools** | Registered binaries | Only tools you explicitly registered are available |
 
 ## Configuration
 
 ```toml
-# .cato.toml — commit to git, portable rules for the team
+# .cato.toml — commit to git, same rules for everyone
 
 [sandbox]
-writable = ["{workspace}", "/tmp"]
+# Write: deny by default. Only these paths are writable.
+allow_write = ["{workspace}", "/tmp"]
 
+# Write deny: block writes to these patterns even within allow_write.
+deny_write = ["*.lock", ".github/*"]
+
+# Read deny: block reads for these patterns. Kernel-enforced.
 deny_read = [
     "*.env", "*.env.*",
     "*.pem", "*.key", "*.p12",
     "id_rsa", "id_ed25519",
-    "*credentials*", "*.keystore",
-    ".git-credentials",
+    "*credentials*",
 ]
 
+# Network: deny by default. Only listed domains reachable.
+# Empty = no outbound. ["*"] = unrestricted.
 network = [
     "github.com",
     "api.anthropic.com",
     "registry.npmjs.org",
 ]
 
-tools = ["node", "git", "npm", "claude"]
+tools = ["node", "git", "npm"]
 
 [sandbox.secrets]
-ANTHROPIC_API_KEY = {}
+API_KEY = {}
 DATABASE_URL = { default = "postgres://localhost/mydb" }
 
 [sandbox.options]
@@ -116,105 +176,136 @@ ssh_agent = true
 allow_localhost = true
 ```
 
-### Configuration reference
-
-| Field | Description |
+| Field | What it does |
 |-------|-------------|
-| `writable` | Paths writable inside sandbox. `{workspace}` expands to project dir. |
-| `deny_read` | Glob patterns for files blocked from reading (kernel-enforced). |
-| `network` | Allowed domains. Empty = unrestricted. Non-empty = deny all others. |
-| `tools` | Tool binaries required inside the sandbox. |
-| `secrets` | Secrets injected as env vars. Values from host env or `~/.cato/store.toml`. |
-| `ssh_agent` | Forward SSH agent socket (for git push via SSH). |
+| `allow_write` | Paths where writes are allowed. Everything else is read-only or invisible. |
+| `deny_write` | Patterns blocked from writing even within `allow_write` paths. Deny overrides allow. |
+| `deny_read` | File patterns blocked from reading — kernel-enforced, can't be bypassed. |
+| `network` | Allowed domains. Empty = blocked. `["*"]` = unrestricted. |
+| `tools` | Required tool binaries. |
+| `secrets` | Injected as env vars. Never exist as files inside. |
+| `ssh_agent` | Forward SSH agent for git push. |
 | `allow_localhost` | Allow localhost connections (dev servers, databases). |
+
+## How it works
+
+```mermaid
+flowchart TD
+    A[cato run] --> B[Read .cato.toml]
+    B --> C[Generate kernel sandbox profile\ndeny-default]
+    C --> D{Network domains\nconfigured?}
+    D -->|Yes| E[Start local proxy\nfor domain filtering]
+    D -->|No| F[Allow all outbound]
+    E --> G[Inject secrets as env vars]
+    F --> G
+    G --> H[Enter sandbox-exec\nwith shell]
+    H --> I[Sandbox active\nkernel-enforced]
+    I --> J[On exit: cleanup + audit log]
+
+    style I fill:#2d6,stroke:#183,color:#fff
+    style A fill:#369,stroke:#147,color:#fff
+```
+
+Uses macOS Seatbelt (`sandbox-exec`) — the same kernel framework that sandboxes App Store apps. Deny-default: everything blocked unless explicitly allowed.
 
 ### Network filtering
 
-When `network` has domains listed, Cato enforces a **deny-all-except** model:
+```mermaid
+flowchart LR
+    subgraph Sandbox [Sandbox - kernel enforced]
+        P[Process]
+    end
 
-1. The macOS kernel blocks all outbound connections except to localhost
-2. A local proxy on localhost only forwards to allowed domains
-3. Tools see `http_proxy`/`https_proxy` env vars and route through the proxy
+    P -->|"curl github.com"| Proxy[Local Proxy\nlocalhost]
+    Proxy -->|"github.com ✓ allowed"| Internet["github.com"]
+    Proxy -->|"evil.com ✗ denied"| Block[403 Forbidden]
+    P -.->|"direct connection\nto any IP"| Kernel["Kernel blocks ✗"]
 
-Even if a process ignores the proxy env vars, it can't reach the internet — blocked at the kernel level.
-
-Wildcards supported: `*.github.com` matches `api.github.com`, `raw.github.com`.
-
-### Secrets
-
-Secrets never exist as files inside the sandbox. They're injected as environment variables.
-
-```bash
-# Store globally (available to all projects)
-cato secret put ANTHROPIC_API_KEY
-
-# Store per-project (overrides global for this project)
-cato secret put DATABASE_URL=postgres://localhost/myapp --project
+    style Block fill:#c33,stroke:#911,color:#fff
+    style Kernel fill:#c33,stroke:#911,color:#fff
+    style Internet fill:#2d6,stroke:#183,color:#fff
+    style Sandbox fill:#f5f5f5,stroke:#999
 ```
 
-Resolution order: host env var > project-scoped store > global store > default value.
+When domains are configured, the kernel blocks all outbound except localhost. A local proxy on localhost only forwards to allowed domains. Even if a process ignores proxy env vars, direct internet access is kernel-blocked.
 
-In CI, secrets come from environment variables automatically — no `cato secret put` needed.
+### Secret protection
 
-## CLI reference
+`deny_read` patterns are enforced at the kernel level. `cat .env` returns "Operation not permitted" — no Python trick, shell escape, or symlink attack can bypass it.
+
+## What's enforced
+
+| Layer | Default | Mechanism |
+|-------|---------|-----------|
+| Writes | Denied everywhere | `allow_write` opens paths, `deny_write` blocks within |
+| Reads | Allowed (workspace + system) | `deny_read` blocks patterns — kernel-enforced |
+| Network | Denied (no outbound) | `network` opens domains — kernel + proxy enforced |
+| Home directory | Invisible | Always — can't be overridden |
+| Config | Write-protected | `.cato.toml` can't be modified from inside |
+
+## CLI
 
 | Command | Description |
 |---------|-------------|
 | `cato init` | Create `.cato.toml` with sensible defaults |
-| `cato init --strict` | Stricter defaults (more deny patterns) |
 | `cato run` | Enter sandboxed shell |
 | `cato run -- <cmd>` | Run single command in sandbox |
-| `cato run --ephemeral` | Sandbox with disposable workspace copy |
+| `cato run --ephemeral` | Disposable workspace copy |
 | `cato tool add <name>` | Register a tool binary |
-| `cato tool list` | List registered tools |
-| `cato tool remove <name>` | Remove a tool |
-| `cato secret put <NAME>` | Store a secret (prompts for value) |
-| `cato secret put <N>=<V>` | Store a secret with value |
-| `cato secret put <N> --project` | Store project-scoped secret |
-| `cato secret list` | List secrets (values masked) |
-| `cato secret remove <NAME>` | Remove a secret |
+| `cato secret put <NAME>` | Store a secret |
+| `cato secret put <N> --project` | Project-scoped secret |
 | `cato status` | Show sandbox readiness |
-| `cato audit` | View sandbox event log |
-| `cato audit -f` | Follow new entries in real-time |
-
-## Use with AI agents
-
-Run any AI agent inside the sandbox. The agent gets the same restrictions as everything else:
-
-```bash
-# Claude Code
-cato run -- claude "add authentication to this app"
-
-# Interactive — start sandbox, then run your agent inside
-cato run
-🔒 $ claude
-🔒 $ cursor
-🔒 $ node my-agent.js
-```
-
-The agent can read and write workspace files, use registered tools, access allowed network domains, and use injected secrets — nothing more.
+| `cato audit` | View event log (per-project) |
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph Host ["Host (unrestricted)"]
+        Store["~/.cato/store.toml\ntools + secrets"]
+        Cato["cato binary"]
+        Proxy["Network proxy\n(if domains configured)"]
+    end
+
+    subgraph SB ["Sandbox (kernel-enforced)"]
+        Shell["Shell / Agent / Script"]
+        WS["Workspace\nread-write ✓"]
+        Tmp["/tmp\nread-write ✓"]
+        Sys["System dirs\nread-only ✓"]
+        Home["Home dir\ninvisible ✗"]
+        Secrets[".env, *.pem\nblocked ✗"]
+        Net["Direct network\nblocked ✗"]
+    end
+
+    Cato -->|"reads"| Store
+    Cato -->|"generates profile\ninjects secrets"| SB
+    Cato -->|"starts"| Proxy
+    Shell --> WS
+    Shell --> Tmp
+    Shell --> Sys
+    Shell -.-> Home
+    Shell -.-> Secrets
+    Shell -.-> Net
+    Shell -->|"allowed domains\nvia proxy"| Proxy
+    Proxy -->|"✓"| Internet["Internet\n(allowed domains only)"]
+
+    style SB fill:#f0f7f0,stroke:#2d6,stroke-width:2px
+    style Host fill:#f5f5f5,stroke:#999
+    style Home fill:#fdd,stroke:#c33
+    style Secrets fill:#fdd,stroke:#c33
+    style Net fill:#fdd,stroke:#c33
+    style WS fill:#dfd,stroke:#2d6
+    style Tmp fill:#dfd,stroke:#2d6
 ```
-Host (unrestricted)
-  ├── ~/.cato/store.toml     ← tool paths + secrets (never visible inside)
-  ├── cato binary
-  │     ├── Reads .cato.toml
-  │     ├── Starts network proxy (if domains configured)
-  │     ├── Generates Seatbelt profile (deny-default)
-  │     ├── Injects secrets as env vars
-  │     └── Enters: sandbox-exec -f profile.sb /bin/zsh
-  │
-  └── Sandbox (kernel-enforced)
-        ├── Workspace: read-write
-        ├── /tmp: read-write
-        ├── System dirs: read-only
-        ├── Home dir: invisible
-        ├── Network: allowed domains only (via proxy)
-        ├── .env, *.pem, etc: Operation not permitted
-        └── All child processes inherit restrictions
-```
+
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| macOS (Apple Silicon) | Supported |
+| macOS (Intel) | Supported |
+| Linux | Planned |
+| Windows | Not supported |
 
 ## Building from source
 
@@ -225,24 +316,9 @@ cargo build --release
 ./target/release/cato --help
 ```
 
-## Platform support
-
-| Platform | Status |
-|----------|--------|
-| macOS (Apple Silicon) | Supported (Seatbelt/sandbox-exec) |
-| macOS (Intel) | Supported |
-| Linux | Planned (bubblewrap/Landlock) |
-| Windows | Not planned |
-
 ## Contributing
 
-PRs welcome. Run `cargo test` before submitting.
-
-## Security
-
-Cato uses macOS `sandbox-exec` (Seatbelt framework) for kernel-level process sandboxing. The deny-default profile blocks everything not explicitly allowed. Network filtering uses a local proxy with domain allow lists, backed by kernel-level outbound blocking.
-
-Report vulnerabilities via [GitHub Issues](https://github.com/Harikrishnareddyl/cato/issues).
+PRs welcome. Run `cargo test` before submitting. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

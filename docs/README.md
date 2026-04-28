@@ -14,4 +14,3 @@
 ## Design
 
 - [Security Model](security.md)
-- [v0.4.0 Sandbox Spec](specs/0.4.0-sandbox.md)

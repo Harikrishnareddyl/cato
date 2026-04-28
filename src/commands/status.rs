@@ -21,22 +21,27 @@ pub fn run() {
         println!("Project:    {}", cwd.display());
         match sandbox::config::load(&config_path) {
             Ok(config) => {
-                // Writable paths
-                println!("Writable:   {} paths", config.writable.len());
+                // Write access
+                println!("Write:      {} allowed paths", config.allow_write.len());
+                if !config.deny_write.is_empty() {
+                    println!("Write deny: {} patterns", config.deny_write.len());
+                }
 
-                // Deny read patterns
+                // Read deny
                 if !config.deny_read.is_empty() {
-                    println!("Deny read:  {} patterns", config.deny_read.len());
+                    println!("Read deny:  {} patterns", config.deny_read.len());
                 }
 
                 // Network
-                if !config.network.is_empty() {
+                if config.network.iter().any(|d| d == "*") {
+                    println!("Network:    unrestricted");
+                } else if !config.network.is_empty() {
                     println!("Network:    {} allowed domains", config.network.len());
                     for domain in &config.network {
                         println!("              {}", domain);
                     }
                 } else {
-                    println!("Network:    unrestricted");
+                    println!("Network:    \x1b[33mblocked (no domains)\x1b[0m");
                 }
 
                 // Tools

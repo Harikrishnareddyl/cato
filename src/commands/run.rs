@@ -71,8 +71,13 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
         .collect();
 
     // Start network proxy if domain filtering is configured
+    // Empty network = blocked (no proxy needed, kernel blocks all)
+    // ["*"] = unrestricted (no proxy needed)
+    // ["github.com", ...] = proxy filters by domain
     let audit_path = crate::audit::log_path();
-    let _proxy = if !resolved.network.is_empty() {
+    let network_needs_proxy = !resolved.network.is_empty()
+        && !resolved.network.iter().any(|d| d == "*");
+    let _proxy = if network_needs_proxy {
         match sandbox::proxy::NetworkProxy::start(
             resolved.network.clone(),
             resolved.workspace.clone(),
@@ -139,16 +144,21 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
     eprintln!("[cato] Sandbox active");
     eprintln!("[cato]   Workspace: {}", resolved.workspace);
     if !resolved.deny_read.is_empty() {
-        eprintln!("[cato]   Denied:    {} patterns", resolved.deny_read.len());
+        eprintln!("[cato]   Read deny: {} patterns", resolved.deny_read.len());
     }
-    if !resolved.network.is_empty() {
+    if !resolved.deny_write.is_empty() {
+        eprintln!("[cato]   Write deny: {} patterns", resolved.deny_write.len());
+    }
+    if resolved.network.iter().any(|d| d == "*") {
+        eprintln!("[cato]   Network:   unrestricted");
+    } else if !resolved.network.is_empty() {
         let proxy_info = _proxy.as_ref()
             .map(|p| format!(" (proxy :{})", p.port()))
             .unwrap_or_default();
         eprintln!("[cato]   Network:   {} allowed, deny all others{}",
             resolved.network.len(), proxy_info);
     } else {
-        eprintln!("[cato]   Network:   unrestricted");
+        eprintln!("[cato]   Network:   blocked (no domains configured)");
     }
     if !env_vars.is_empty() {
         let secret_count = env_vars.iter()
@@ -251,6 +261,7 @@ fn log_sandbox_event(
         "event": event,
         "workspace": config.workspace,
         "deny_read": config.deny_read.len(),
+        "deny_write": config.deny_write.len(),
         "network": config.network.len(),
     });
 

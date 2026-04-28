@@ -130,30 +130,52 @@ pub fn generate(config: &ResolvedConfig, tool_paths: &[String]) -> String {
     }
 
     // ═══════════════════════════════════════════════════════
-    // Workspace — read + write
+    // Workspace — always readable
     // ═══════════════════════════════════════════════════════
-    p.push("; Workspace".into());
+    p.push("; Workspace (read access)".into());
     p.push(format!("(allow file-read* (subpath \"{}\"))", config.workspace));
-    p.push(format!("(allow file-write* (subpath \"{}\"))", config.workspace));
     p.push("".into());
 
     // ═══════════════════════════════════════════════════════
-    // Additional writable paths (/tmp)
+    // allow_write — paths where writes are permitted
+    // (deny-by-default for writes everywhere else)
     // ═══════════════════════════════════════════════════════
-    p.push("; Additional writable paths".into());
-    for path in &config.writable {
-        if *path == config.workspace { continue; }
-        p.push(format!("(allow file-read* (subpath \"{}\"))", path));
+    p.push("; Writable paths (allow_write)".into());
+    for path in &config.allow_write {
         p.push(format!("(allow file-write* (subpath \"{}\"))", path));
+        // Also ensure read access for writable paths
+        if *path != config.workspace {
+            p.push(format!("(allow file-read* (subpath \"{}\"))", path));
+        }
         if path == "/tmp" {
             p.push("(allow file-read* (subpath \"/private/tmp\"))".into());
             p.push("(allow file-write* (subpath \"/private/tmp\"))".into());
         }
     }
-    // System temp paths
+    // System temp paths (always needed for build tools)
     p.push("(allow file-read* file-write* (subpath \"/var/folders\"))".into());
     p.push("(allow file-read* file-write* (subpath \"/private/var/folders\"))".into());
     p.push("".into());
+
+    // ═══════════════════════════════════════════════════════
+    // deny_write — block writes to patterns within allow_write paths
+    // Deny overrides allow (placed after allow rules)
+    // ═══════════════════════════════════════════════════════
+    if !config.deny_write.is_empty() {
+        p.push("; Deny writes (overrides allow_write)".into());
+        for pattern in &config.deny_write {
+            if pattern.contains('*') || !pattern.contains('/') {
+                let regex = glob_to_seatbelt_regex(pattern);
+                p.push(format!(
+                    "(deny file-write* (require-all (subpath \"{}\") (regex #\"{}\")))",
+                    config.workspace, regex
+                ));
+            } else {
+                p.push(format!("(deny file-write* (subpath \"{}\"))", pattern));
+            }
+        }
+        p.push("".into());
+    }
 
     // ═══════════════════════════════════════════════════════
     // Deny reading sensitive files within workspace/writable paths
@@ -227,11 +249,13 @@ pub fn generate(config: &ResolvedConfig, tool_paths: &[String]) -> String {
     p.push("(allow network-inbound (local ip \"*:*\"))".into());
     p.push("(allow network-outbound (remote ip \"localhost:*\"))".into());
 
-    if config.network.is_empty() {
-        // No domain list = unrestricted outbound
-        p.push("(allow network-outbound (remote ip \"*:*\"))".into());
+    let network_unrestricted = config.network.iter().any(|d| d == "*");
+
+    if network_unrestricted {
+        // Explicit ["*"] = unrestricted network
+        p.push("(allow network*)".into());
     } else {
-        // Domain list specified = deny all outbound except localhost
+        // Deny by default (empty list = no outbound, non-empty = proxy filters)
         // The proxy (running on localhost) enforces domain filtering
         // DNS also blocked — proxy handles resolution
         p.push("; All outbound blocked except localhost (proxy enforces domain list)".into());

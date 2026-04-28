@@ -3,12 +3,20 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SandboxConfig {
-    #[serde(default = "default_writable")]
-    pub writable: Vec<String>,
+    /// Paths where writes are allowed (deny-by-default everywhere else)
+    #[serde(default = "default_allow_write", alias = "writable")]
+    pub allow_write: Vec<String>,
 
+    /// Patterns blocked from writing even within allow_write paths (deny overrides allow)
+    #[serde(default)]
+    pub deny_write: Vec<String>,
+
+    /// Patterns blocked from reading (deny overrides default allow-all reads)
     #[serde(default)]
     pub deny_read: Vec<String>,
 
+    /// Allowed network domains (deny-by-default, empty = no outbound)
+    /// Use ["*"] for unrestricted network access
     #[serde(default)]
     pub network: Vec<String>,
 
@@ -30,7 +38,7 @@ pub struct SandboxOptions {
     pub allow_localhost: bool,
 }
 
-fn default_writable() -> Vec<String> {
+fn default_allow_write() -> Vec<String> {
     vec!["{workspace}".to_string(), "/tmp".to_string()]
 }
 
@@ -67,7 +75,11 @@ pub fn resolve(config: &SandboxConfig, workspace: &Path) -> ResolvedConfig {
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|| "/tmp".to_string());
 
-    let writable: Vec<String> = config.writable.iter()
+    let allow_write: Vec<String> = config.allow_write.iter()
+        .map(|p| resolve_path(p, &workspace_str, &home))
+        .collect();
+
+    let deny_write: Vec<String> = config.deny_write.iter()
         .map(|p| resolve_path(p, &workspace_str, &home))
         .collect();
 
@@ -77,7 +89,8 @@ pub fn resolve(config: &SandboxConfig, workspace: &Path) -> ResolvedConfig {
 
     ResolvedConfig {
         workspace: workspace_str,
-        writable,
+        allow_write,
+        deny_write,
         deny_read,
         network: config.network.clone(),
         tools: config.tools.clone(),
@@ -94,7 +107,8 @@ fn resolve_path(path: &str, workspace: &str, home: &str) -> String {
 #[derive(Debug)]
 pub struct ResolvedConfig {
     pub workspace: String,
-    pub writable: Vec<String>,
+    pub allow_write: Vec<String>,
+    pub deny_write: Vec<String>,
     pub deny_read: Vec<String>,
     pub network: Vec<String>,
     pub tools: Vec<String>,

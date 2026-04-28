@@ -134,10 +134,23 @@ fn generate_config(level: &str, detected: &ProjectDetection) -> String {
 
     // Sandbox section
     lines.push("[sandbox]".to_string());
-    lines.push("writable = [\"{workspace}\", \"/tmp\"]".to_string());
+    lines.push("# Write access: deny by default. Only these paths are writable.".to_string());
+    lines.push("allow_write = [\"{workspace}\", \"/tmp\"]".to_string());
+    lines.push(String::new());
+
+    // deny_write
+    lines.push("# Write deny: block writes to these patterns even within allow_write paths".to_string());
+    lines.push("deny_write = [".to_string());
+    lines.push("    \"*.lock\",".to_string());
+    if level == "strict" {
+        lines.push("    \".github/*\",".to_string());
+        lines.push("    \"migrations/*\",".to_string());
+    }
+    lines.push("]".to_string());
     lines.push(String::new());
 
     // deny_read
+    lines.push("# Read deny: block reads for these patterns (kernel-enforced)".to_string());
     lines.push("deny_read = [".to_string());
     lines.push("    \"*.env\",".to_string());
     lines.push("    \"*.env.*\",".to_string());
@@ -154,18 +167,29 @@ fn generate_config(level: &str, detected: &ProjectDetection) -> String {
     lines.push("]".to_string());
     lines.push(String::new());
 
-    // Network
+    // Network — deny by default, list trusted sources
+    lines.push("# Network: deny by default. Only listed domains are reachable.".to_string());
+    lines.push("# Use [\"*\"] for unrestricted network access.".to_string());
     lines.push("network = [".to_string());
+    // Always include detected domains
     for domain in &detected.network {
         lines.push(format!("    \"{}\",", domain));
     }
-    // Always include common AI APIs
+    // Add common trusted sources
+    if !detected.network.iter().any(|d| d.contains("github")) {
+        lines.push("    \"github.com\",".to_string());
+    }
     if level != "minimal" {
-        if !detected.network.iter().any(|d| d.contains("anthropic")) {
-            lines.push("    # \"api.anthropic.com\",  # uncomment if using Claude".to_string());
+        if !detected.network.iter().any(|d| d.contains("npmjs")) {
+            if detected.tools.iter().any(|t| t == "node" || t == "npm") {
+                lines.push("    \"registry.npmjs.org\",".to_string());
+            }
         }
-        if !detected.network.iter().any(|d| d.contains("openai")) {
-            lines.push("    # \"api.openai.com\",     # uncomment if using OpenAI".to_string());
+        if !detected.network.iter().any(|d| d.contains("pypi")) {
+            if detected.tools.iter().any(|t| t == "python3" || t == "pip") {
+                lines.push("    \"pypi.org\",".to_string());
+                lines.push("    \"files.pythonhosted.org\",".to_string());
+            }
         }
     }
     lines.push("]".to_string());

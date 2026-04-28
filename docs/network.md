@@ -42,13 +42,21 @@ network = [
 ]
 ```
 
-### Empty list = unrestricted
+### Empty list = no network
 
 ```toml
 network = []
 ```
 
-No proxy started, all outbound traffic allowed.
+All outbound blocked. No proxy needed — the kernel blocks everything.
+
+### Unrestricted network
+
+```toml
+network = ["*"]
+```
+
+All outbound allowed. No proxy, no filtering.
 
 ### Wildcards
 

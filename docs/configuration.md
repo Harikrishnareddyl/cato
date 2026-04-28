@@ -1,13 +1,19 @@
 # Configuration
 
-Cato is configured per-project via `.cato.toml`. Commit this to git — it defines the sandbox rules for everyone on the team.
+Cato is configured per-project via `.cato.toml`. Commit this to git — it defines the sandbox boundaries for everyone on the team.
 
 ## Full Example
 
 ```toml
 [sandbox]
-writable = ["{workspace}", "/tmp"]
+# Write: deny by default. Only these paths are writable.
+allow_write = ["{workspace}", "/tmp"]
 
+# Write deny: block writes to these patterns even within allow_write paths.
+# Deny overrides allow.
+deny_write = ["*.lock", ".github/*", "migrations/*"]
+
+# Read deny: block reads for these patterns. Kernel-enforced.
 deny_read = [
     "*.env", "*.env.*",
     "*.pem", "*.key", "*.p12",
@@ -16,6 +22,8 @@ deny_read = [
     ".git-credentials",
 ]
 
+# Network: deny by default. Only listed domains are reachable.
+# Empty = no outbound at all. ["*"] = unrestricted.
 network = [
     "github.com",
     "api.anthropic.com",
@@ -34,87 +42,123 @@ ssh_agent = true
 allow_localhost = true
 ```
 
-## Fields
+## Access Control Model
 
-### `writable`
+### Writes
 
-Paths that are writable inside the sandbox. Everything else is read-only or invisible.
+Writes are **denied everywhere by default**. You explicitly list which paths are writable.
+
+```toml
+allow_write = ["{workspace}", "/tmp"]
+```
 
 - `{workspace}` expands to the project directory
-- Default: `["{workspace}", "/tmp"]`
+- You can add any absolute path: `"/var/data"`, `"~/shared-output"`
+- If you remove `{workspace}`, the workspace becomes read-only (reviewer mode)
 
-### `deny_read`
-
-Glob patterns for files that cannot be read inside the sandbox, even within the workspace. Enforced at the kernel level — no process can bypass it.
+Within allowed paths, you can further restrict with `deny_write`:
 
 ```toml
+deny_write = ["*.lock", "package-lock.json", ".github/*"]
+```
+
+**Precedence: deny overrides allow.** A file matching both `allow_write` and `deny_write` is blocked.
+
+### Reads
+
+Reads are **allowed by default** within the workspace and system directories. You block specific patterns:
+
+```toml
+deny_read = ["*.env", "*.pem", "*.key", "*credentials*"]
+```
+
+These are kernel-enforced — no process can bypass them regardless of language or technique.
+
+Note: the home directory (`~/`) is always invisible regardless of `deny_read`. Only the workspace and system directories are readable.
+
+### Network
+
+Network is **denied by default**. No outbound connections unless you list domains:
+
+```toml
+network = ["github.com", "registry.npmjs.org"]
+```
+
+- **Empty or missing** = no outbound network at all
+- **Specific domains** = only those reachable (via proxy filtering + kernel block)
+- **`["*"]`** = unrestricted network access
+
+Wildcards supported: `"*.github.com"` matches `api.github.com`, `raw.github.com`.
+
+Localhost is always allowed regardless of network config (controlled by `allow_localhost` option).
+
+## Precedence Summary
+
+| Layer | Default | Override |
+|-------|---------|----------|
+| Write | Deny all | `allow_write` opens paths → `deny_write` blocks within |
+| Read | Allow (workspace + system) | `deny_read` blocks patterns |
+| Network | Deny all | `network` opens domains → `["*"]` opens all |
+
+## Common Patterns
+
+### Standard project (full access within workspace)
+```toml
+[sandbox]
+allow_write = ["{workspace}", "/tmp"]
 deny_read = ["*.env", "*.pem", "*.key"]
+network = ["github.com", "registry.npmjs.org"]
 ```
 
-Patterns:
-- `*.env` matches `.env`, `prod.env`, `test.env`
-- `*.env.*` matches `.env.local`, `.env.production`
-- `*credentials*` matches anything with "credentials" in the name
-- `id_rsa` matches the exact filename anywhere in the workspace
-
-These patterns are scoped to the workspace — system files like `/etc/ssl/cert.pem` are not affected.
-
-### `network`
-
-Allowed domains. Controls which external hosts are reachable from inside the sandbox.
-
-- **Empty list** (`network = []`): all outbound traffic allowed
-- **Non-empty list**: only listed domains are reachable, everything else blocked
-
+### Read-only reviewer (agent can read but not modify)
 ```toml
-network = ["github.com", "*.npmjs.org", "api.anthropic.com"]
+[sandbox]
+allow_write = ["/tmp"]
+deny_read = ["*.env"]
+network = ["*"]
 ```
 
-Wildcards: `*.github.com` matches `api.github.com`, `raw.github.com`, etc.
-
-See [Network Filtering](network.md) for details.
-
-### `tools`
-
-Tool binaries required inside the sandbox. Cato checks these before entering and will error if any are missing.
-
+### Strict scope (agent only edits specific files)
 ```toml
-tools = ["node", "git", "npm"]
+[sandbox]
+allow_write = ["src/auth/", "tests/auth/", "/tmp"]
+deny_read = ["*.env", "*.key"]
+network = ["github.com"]
 ```
 
-Register tools with `cato tool add <name>`.
-
-### `[sandbox.secrets]`
-
-Secrets to inject as environment variables. Values come from the host — either environment variables or `~/.cato/store.toml`.
-
+### Fully locked down (no writes, no network)
 ```toml
-[sandbox.secrets]
-ANTHROPIC_API_KEY = {}                              # required, no default
-DATABASE_URL = { default = "postgres://localhost" }  # has fallback
+[sandbox]
+allow_write = ["/tmp"]
+deny_read = ["*.env", "*.pem", "*.key"]
+network = []
 ```
 
-See [Secrets & Tools](secrets-and-tools.md) for the full resolution order.
+## Fields Reference
 
-### `[sandbox.options]`
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `ssh_agent` | `false` | Forward SSH agent socket for git push via SSH |
-| `allow_localhost` | `true` | Allow connections to localhost (dev servers, databases) |
+| Field | Default | Description |
+|-------|---------|-------------|
+| `allow_write` | `["{workspace}", "/tmp"]` | Paths where writes are allowed |
+| `deny_write` | `[]` | Patterns blocked from writing within allowed paths |
+| `deny_read` | `[]` | Patterns blocked from reading (kernel-enforced) |
+| `network` | `[]` (blocked) | Allowed domains. Empty = no network. `["*"]` = unrestricted |
+| `tools` | `[]` | Required tool binaries |
+| `secrets` | `{}` | Secrets injected as env vars |
+| `ssh_agent` | `false` | Forward SSH agent socket |
+| `allow_localhost` | `true` | Allow localhost connections |
 
 ## Presets
 
-`cato init` supports presets:
-
 ```bash
-cato init              # standard defaults
-cato init --minimal    # secrets and keys only
-cato init --strict     # strictest defaults
+cato init              # standard defaults (workspace writable, common deny patterns)
+cato init --minimal    # just secrets protection
+cato init --strict     # tighter deny_write, more patterns
 ```
 
 ## Tips
 
-- Commit `.cato.toml` to git — the sandbox config travels with the project
-- Use `cato status` to check if all tools and secrets are ready
-- Use `CATO_DEBUG=1 cato run` to see the generated Seatbelt profile
+- Commit `.cato.toml` to git — rules travel with the project
+- Use `cato status` to verify tools, secrets, and network readiness
+- Use `CATO_DEBUG=1 cato run` to inspect the generated sandbox profile
+- `deny_write = ["*.lock"]` prevents agents from modifying lockfiles
+- Remove `{workspace}` from `allow_write` for a read-only sandbox
