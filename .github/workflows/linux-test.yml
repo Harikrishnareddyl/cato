@@ -1,0 +1,245 @@
+name: Linux Sandbox Test
+
+on:
+  push:
+    branches: [linux-support]
+  pull_request:
+    branches: [linux-support]
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install bubblewrap
+        run: sudo apt-get install -y bubblewrap
+
+      - name: Check kernel version (need 5.13+ for Landlock)
+        run: |
+          uname -r
+          cat /proc/version
+
+      - name: Check bubblewrap version
+        run: bwrap --version
+
+      - name: Check if Landlock is available
+        run: |
+          if [ -f /sys/kernel/security/landlock/status ]; then
+            echo "Landlock available:"
+            cat /sys/kernel/security/landlock/status
+          else
+            echo "Landlock not available via sysfs, checking kernel config..."
+            grep LANDLOCK /boot/config-$(uname -r) 2>/dev/null || echo "Cannot determine Landlock status"
+          fi
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run unit tests
+        run: cargo test --release
+
+      - name: Test bwrap basic isolation
+        run: |
+          echo "=== Test: bwrap basic namespace isolation ==="
+          bwrap \
+            --ro-bind /usr /usr \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --ro-bind /bin /bin \
+            --ro-bind /sbin /sbin \
+            --ro-bind /etc /etc \
+            --proc /proc \
+            --dev /dev \
+            --tmpfs /tmp \
+            --unshare-pid \
+            --die-with-parent \
+            -- /bin/echo "bwrap works"
+
+      - name: Test bwrap filesystem isolation
+        run: |
+          echo "=== Test: filesystem isolation ==="
+          TESTDIR=$(mktemp -d)
+          echo "secret" > "$TESTDIR/secret.env"
+          echo "normal" > "$TESTDIR/normal.txt"
+
+          # Workspace visible, /home hidden
+          bwrap \
+            --ro-bind /usr /usr \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --ro-bind /bin /bin \
+            --ro-bind /sbin /sbin \
+            --ro-bind /etc /etc \
+            --proc /proc \
+            --dev /dev \
+            --bind "$TESTDIR" "$TESTDIR" \
+            --tmpfs /home \
+            --unshare-pid \
+            --die-with-parent \
+            --chdir "$TESTDIR" \
+            -- /bin/sh -c '
+              echo "workspace read: $(cat normal.txt)"
+              echo "write test:"
+              echo "written" > write-test.txt && cat write-test.txt
+              echo "home hidden:"
+              ls /home/ 2>&1 || echo "  (empty/hidden)"
+            '
+          rm -rf "$TESTDIR"
+
+      - name: Test bwrap network isolation
+        run: |
+          echo "=== Test: network namespace isolation ==="
+          # With --unshare-net, network should be blocked
+          EXIT=0
+          bwrap \
+            --ro-bind /usr /usr \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --ro-bind /bin /bin \
+            --ro-bind /sbin /sbin \
+            --ro-bind /etc /etc \
+            --proc /proc \
+            --dev /dev \
+            --tmpfs /tmp \
+            --unshare-pid \
+            --unshare-net \
+            --die-with-parent \
+            -- /bin/sh -c 'curl -s --max-time 3 https://example.com > /dev/null 2>&1' || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: network blocked (exit $EXIT)"
+          else
+            echo "FAIL: network should be blocked"
+            exit 1
+          fi
+
+      - name: Test cato init
+        run: |
+          echo "=== Test: cato init ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          $GITHUB_WORKSPACE/target/release/cato init
+          cat .cato.toml
+          rm -rf "$TESTDIR"
+
+      - name: Test cato run (basic command)
+        run: |
+          echo "=== Test: cato run -- echo hello ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_read = ["*.env"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          CATO_DEBUG=1 $GITHUB_WORKSPACE/target/release/cato run -- /bin/echo "sandbox works on linux" 2>&1
+          rm -rf "$TESTDIR"
+
+      - name: Test cato deny_read enforcement
+        run: |
+          echo "=== Test: deny_read on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_read = ["*.env", "*.key"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "SECRET=leaked" > .env
+          echo "normal" > test.txt
+
+          # Normal file should be readable
+          $GITHUB_WORKSPACE/target/release/cato run -- cat test.txt
+
+          # .env should be blocked (exit non-zero)
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- cat .env 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: .env blocked (exit $EXIT)"
+          else
+            echo "FAIL: .env should be blocked"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test cato network blocking
+        run: |
+          echo "=== Test: network deny-by-default on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = []
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- curl -s --max-time 5 https://example.com 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: network blocked with empty list (exit $EXIT)"
+          else
+            echo "FAIL: network should be blocked"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test cato home directory isolation
+        run: |
+          echo "=== Test: home dir hidden on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- ls $HOME/Documents 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: home dir hidden (exit $EXIT)"
+          else
+            echo "FAIL: home should be hidden"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run unit tests
+        run: cargo test --release
+
+      - name: Run smoke tests
+        run: chmod +x tests/smoke_test.sh && ./tests/smoke_test.sh

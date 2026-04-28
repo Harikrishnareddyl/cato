@@ -1,8 +1,42 @@
-use super::config::{self, ResolvedConfig};
+use super::config::ResolvedConfig;
 use std::path::Path;
 
-/// Run the sandbox
+/// Run the sandbox — dispatches to platform-specific implementation
+#[cfg(target_os = "macos")]
 pub fn run(
+    resolved: &ResolvedConfig,
+    profile_path: &Path,
+    command: Option<Vec<String>>,
+    env_vars: Vec<(String, String)>,
+) -> i32 {
+    run_macos(resolved, profile_path, command, env_vars)
+}
+
+#[cfg(target_os = "linux")]
+pub fn run(
+    resolved: &ResolvedConfig,
+    profile_path: &Path,
+    command: Option<Vec<String>>,
+    env_vars: Vec<(String, String)>,
+) -> i32 {
+    let _ = profile_path; // not used on Linux
+    run_linux(resolved, command, env_vars)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn run(
+    _resolved: &ResolvedConfig,
+    _profile_path: &Path,
+    _command: Option<Vec<String>>,
+    _env_vars: Vec<(String, String)>,
+) -> i32 {
+    eprintln!("[cato] Unsupported platform. Cato requires macOS or Linux.");
+    1
+}
+
+/// macOS: sandbox-exec with Seatbelt profile
+#[cfg(target_os = "macos")]
+fn run_macos(
     resolved: &ResolvedConfig,
     profile_path: &Path,
     command: Option<Vec<String>>,
@@ -10,7 +44,6 @@ pub fn run(
 ) -> i32 {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
-    // Build the command
     let mut cmd = std::process::Command::new("/usr/bin/sandbox-exec");
     cmd.arg("-f").arg(profile_path);
 
@@ -22,32 +55,15 @@ pub fn run(
             }
         }
     } else {
-        // Interactive shell
         cmd.arg(&shell);
     }
 
     // Clear environment and set only what we want
     cmd.env_clear();
+    set_common_env(&mut cmd, resolved, &env_vars);
 
-    // System essentials
-    cmd.env("HOME", std::env::var("HOME").unwrap_or_default());
-    cmd.env("USER", std::env::var("USER").unwrap_or_default());
-    cmd.env("SHELL", &shell);
-    cmd.env("TERM", std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()));
-    cmd.env("LANG", std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()));
-    cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
-
-    // Cato sandbox indicator
-    cmd.env("CATO_SANDBOX", "1");
-
-    // Custom prompt — create a wrapper zshrc that sources user's config then sets prompt
-    let workspace_name = Path::new(&resolved.workspace)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "sandbox".to_string());
-    cmd.env("CATO_WORKSPACE", &workspace_name);
-
-    // Create a temp zdotdir with a .zshrc that sources user's then prepends lock icon
+    // macOS-specific: custom prompt via ZDOTDIR
+    let workspace_name = workspace_short_name(&resolved.workspace);
     let zdotdir = std::env::temp_dir().join(format!("cato-zsh-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&zdotdir);
     let zshrc_content = format!(
@@ -59,8 +75,85 @@ pub fn run(
     let _ = std::fs::write(zdotdir.join(".zshrc"), &zshrc_content);
     cmd.env("ZDOTDIR", &zdotdir);
 
-    // Injected env vars (secrets)
-    for (key, value) in &env_vars {
+    cmd.current_dir(&resolved.workspace);
+
+    let exit_code = execute_cmd(&mut cmd, "sandbox-exec", profile_path, &command, &shell);
+
+    let _ = std::fs::remove_dir_all(&zdotdir);
+    exit_code
+}
+
+/// Linux: bubblewrap + Landlock
+#[cfg(target_os = "linux")]
+fn run_linux(
+    resolved: &ResolvedConfig,
+    command: Option<Vec<String>>,
+    env_vars: Vec<(String, String)>,
+) -> i32 {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+
+    // Check bubblewrap is available
+    if !Path::new("/usr/bin/bwrap").exists() && which("bwrap").is_none() {
+        eprintln!("[cato] bubblewrap (bwrap) not found.");
+        eprintln!("  Install: sudo apt install bubblewrap  (Debian/Ubuntu)");
+        eprintln!("           sudo dnf install bubblewrap  (Fedora)");
+        return 1;
+    }
+
+    // Generate bwrap arguments
+    let bwrap_args = super::bwrap::generate_args(resolved);
+
+    let mut cmd = std::process::Command::new("bwrap");
+    for arg in &bwrap_args {
+        cmd.arg(arg);
+    }
+
+    if let Some(ref args) = command {
+        for arg in args {
+            cmd.arg(arg);
+        }
+    } else {
+        cmd.arg(&shell);
+    }
+
+    // Clear environment and set only what we want
+    cmd.env_clear();
+    set_common_env(&mut cmd, resolved, &env_vars);
+
+    // Linux-specific: PS1 prompt
+    let workspace_name = workspace_short_name(&resolved.workspace);
+    cmd.env("PS1", format!("🔒 {} \\w $ ", workspace_name));
+
+    cmd.current_dir(&resolved.workspace);
+
+    let exit_code = execute_cmd(&mut cmd, "bwrap", Path::new(""), &command, &shell);
+
+    // Apply Landlock rules (deny_read/deny_write within mounted paths)
+    // Note: Landlock is applied by bwrap.rs via a wrapper script inside the sandbox
+    // or via the landlock module before exec
+
+    exit_code
+}
+
+/// Set environment variables common to all platforms
+fn set_common_env(
+    cmd: &mut std::process::Command,
+    resolved: &ResolvedConfig,
+    env_vars: &[(String, String)],
+) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+    cmd.env("HOME", std::env::var("HOME").unwrap_or_default());
+    cmd.env("USER", std::env::var("USER").unwrap_or_default());
+    cmd.env("SHELL", &shell);
+    cmd.env("TERM", std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()));
+    cmd.env("LANG", std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()));
+    cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+    cmd.env("CATO_SANDBOX", "1");
+    cmd.env("CATO_WORKSPACE", workspace_short_name(&resolved.workspace));
+
+    // Injected secrets
+    for (key, value) in env_vars {
         cmd.env(key, value);
     }
 
@@ -70,35 +163,35 @@ pub fn run(
             cmd.env("SSH_AUTH_SOCK", sock);
         }
     }
+}
 
-    // Working directory
-    cmd.current_dir(&resolved.workspace);
-
-    // Execute — capture both stdout/stderr for debugging
+/// Execute the sandbox command and return exit code
+fn execute_cmd(
+    cmd: &mut std::process::Command,
+    tool_name: &str,
+    profile_path: &Path,
+    command: &Option<Vec<String>>,
+    shell: &str,
+) -> i32 {
     let debug = std::env::var("CATO_DEBUG").is_ok();
     if debug {
-        eprintln!("[cato] Running: sandbox-exec -f {} -- {:?}", profile_path.display(),
-            command.as_ref().map(|c| c.join(" ")).unwrap_or_else(|| shell.clone()));
+        eprintln!("[cato] Running: {} -f {} {:?}", tool_name, profile_path.display(),
+            command.as_ref().map(|c| c.join(" ")).unwrap_or_else(|| shell.to_string()));
     }
 
-    let exit_code = if debug {
-        // In debug mode, capture output to see errors
+    if debug {
         let output = cmd.output();
         match output {
             Ok(output) => {
-                // Forward stdout/stderr
                 use std::io::Write;
                 let _ = std::io::stdout().write_all(&output.stdout);
                 let _ = std::io::stderr().write_all(&output.stderr);
                 let code = output.status.code().unwrap_or(1);
-                eprintln!("[cato] sandbox-exec exited with code: {}", code);
-                if !output.stderr.is_empty() {
-                    eprintln!("[cato] stderr: {}", String::from_utf8_lossy(&output.stderr));
-                }
+                eprintln!("[cato] {} exited with code: {}", tool_name, code);
                 code
             }
             Err(e) => {
-                eprintln!("[cato] Failed to start sandbox: {}", e);
+                eprintln!("[cato] Failed to start {}: {}", tool_name, e);
                 1
             }
         }
@@ -106,17 +199,28 @@ pub fn run(
         match cmd.status() {
             Ok(status) => status.code().unwrap_or(1),
             Err(e) => {
-                eprintln!("[cato] Failed to start sandbox: {}", e);
+                eprintln!("[cato] Failed to start {}: {}", tool_name, e);
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    eprintln!("[cato] sandbox-exec not found. This requires macOS.");
+                    eprintln!("[cato] {} not found.", tool_name);
                 }
                 1
             }
         }
-    };
+    }
+}
 
-    // Cleanup temp zdotdir
-    let _ = std::fs::remove_dir_all(&zdotdir);
+fn workspace_short_name(workspace: &str) -> String {
+    Path::new(workspace)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sandbox".to_string())
+}
 
-    exit_code
+fn which(name: &str) -> Option<String> {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
