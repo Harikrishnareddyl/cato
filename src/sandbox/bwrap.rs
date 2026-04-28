@@ -287,7 +287,8 @@ mod tests {
 
         let args = generate_args(&config);
         assert!(args.contains(&"--unshare-pid".to_string()));
-        assert!(args.contains(&"--unshare-net".to_string()));
+        // Specific domains = keep host network for proxy, no --unshare-net
+        assert!(!args.contains(&"--unshare-net".to_string()));
         assert!(args.contains(&"--die-with-parent".to_string()));
 
         let chdir_idx = args.iter().position(|a| a == "--chdir").unwrap();
@@ -309,6 +310,23 @@ mod tests {
 
         let args = generate_args(&config);
         assert!(!args.contains(&"--unshare-net".to_string()));
+    }
+
+    #[test]
+    fn test_empty_network_blocked() {
+        let config = ResolvedConfig {
+            workspace: "/home/user/project".into(),
+            allow_write: vec!["/home/user/project".into()],
+            deny_write: vec![],
+            deny_read: vec![],
+            network: vec![],
+            tools: vec![],
+            options: SandboxOptions { ssh_agent: false, allow_localhost: true },
+        };
+
+        let args = generate_args(&config);
+        // Empty network = --unshare-net (kernel blocks all)
+        assert!(args.contains(&"--unshare-net".to_string()));
     }
 
     #[test]
