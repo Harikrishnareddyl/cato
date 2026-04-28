@@ -1,15 +1,15 @@
 use super::config::ResolvedConfig;
+use std::path::{Path, PathBuf};
 
 /// Generate bubblewrap (bwrap) command-line arguments from the sandbox config.
 ///
 /// Strategy:
-/// - --unshare-all: isolate PID, network, mount, UTS namespaces
-/// - --ro-bind: system directories (read-only)
-/// - --bind: writable paths (allow_write)
-/// - --unshare-net: block all network (proxy forwarded via unix socket)
-/// - --proc/--dev: required for process operation
-///
-/// Landlock is applied separately inside the sandbox for deny_read/deny_write patterns.
+/// - Namespace isolation (PID, network, mount, UTS, IPC)
+/// - System directories bind-mounted read-only
+/// - Workspace writable (or specific allow_write paths)
+/// - deny_read: resolve matching files, bind /dev/null over them
+/// - deny_write: resolve matching files, bind read-only over them
+/// - Network: --unshare-net to block all (proxy forwarded separately)
 pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
@@ -32,12 +32,8 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     // ═══════════════════════════════════════════════════════
     // System directories (read-only)
     // ═══════════════════════════════════════════════════════
-    let ro_dirs = [
-        "/usr", "/lib", "/lib64", "/bin", "/sbin",
-        "/etc", "/opt",
-    ];
-    for dir in &ro_dirs {
-        if std::path::Path::new(dir).exists() {
+    for dir in &["/usr", "/lib", "/lib64", "/lib32", "/bin", "/sbin", "/etc", "/opt"] {
+        if Path::new(dir).exists() {
             args.push("--ro-bind".into());
             args.push(dir.to_string());
             args.push(dir.to_string());
@@ -54,17 +50,26 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     // Writable paths (allow_write)
     // ═══════════════════════════════════════════════════════
     for path in &config.allow_write {
-        if std::path::Path::new(path).exists() {
+        if Path::new(path).exists() {
             args.push("--bind".into());
             args.push(path.clone());
             args.push(path.clone());
         }
     }
 
-    // /tmp — always needed for build tools
+    // Ensure /tmp exists (many tools need it)
     if !config.allow_write.iter().any(|p| p == "/tmp") {
         args.push("--tmpfs".into());
         args.push("/tmp".into());
+    }
+
+    // System temp paths
+    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        if Path::new(&tmpdir).exists() && !config.allow_write.iter().any(|p| p == &tmpdir) {
+            args.push("--bind".into());
+            args.push(tmpdir.clone());
+            args.push(tmpdir);
+        }
     }
 
     // ═══════════════════════════════════════════════════════
@@ -73,12 +78,12 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     if let Some(home) = dirs::home_dir() {
         let home_str = home.to_string_lossy().to_string();
 
-        // Create a minimal home inside sandbox
+        // Create empty tmpfs over home (makes it invisible)
         args.push("--tmpfs".into());
         args.push(home_str.clone());
 
         // Bind shell configs (read-only)
-        for dotfile in &[".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile"] {
+        for dotfile in &[".bashrc", ".bash_profile", ".profile"] {
             let path = home.join(dotfile);
             if path.exists() {
                 args.push("--ro-bind".into());
@@ -93,8 +98,7 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     // ═══════════════════════════════════════════════════════
     if config.options.ssh_agent {
         if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
-            let sock_path = std::path::Path::new(&sock);
-            if sock_path.exists() {
+            if Path::new(&sock).exists() {
                 args.push("--bind".into());
                 args.push(sock.clone());
                 args.push(sock);
@@ -103,12 +107,50 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     }
 
     // ═══════════════════════════════════════════════════════
-    // Network proxy socket (for domain filtering)
-    // If network is restricted (not ["*"] and not empty),
-    // the proxy socket is forwarded into the sandbox.
+    // deny_read: find matching files, bind /dev/null over them
+    // This hides file contents (reads return empty/EOF)
     // ═══════════════════════════════════════════════════════
-    // Note: proxy socket binding is handled by the caller (run.rs)
-    // which passes the socket path in env vars after generating args.
+    if !config.deny_read.is_empty() {
+        let matches = resolve_patterns(&config.workspace, &config.deny_read);
+        for file_path in &matches {
+            args.push("--ro-bind".into());
+            args.push("/dev/null".into());
+            args.push(file_path.clone());
+        }
+        if std::env::var("CATO_DEBUG").is_ok() && !matches.is_empty() {
+            eprintln!("[cato] deny_read: hiding {} files via /dev/null bind", matches.len());
+            for m in &matches {
+                eprintln!("[cato]   {}", m);
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // deny_write: find matching files, re-bind as read-only
+    // Existing files become read-only; new files with matching
+    // names can still be created (bwrap limitation)
+    // ═══════════════════════════════════════════════════════
+    if !config.deny_write.is_empty() {
+        let matches = resolve_patterns(&config.workspace, &config.deny_write);
+        for file_path in &matches {
+            args.push("--ro-bind".into());
+            args.push(file_path.clone());
+            args.push(file_path.clone());
+        }
+        if std::env::var("CATO_DEBUG").is_ok() && !matches.is_empty() {
+            eprintln!("[cato] deny_write: protecting {} files as read-only", matches.len());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Config file protection (read-only)
+    // ═══════════════════════════════════════════════════════
+    let config_path = format!("{}/.cato.toml", config.workspace);
+    if Path::new(&config_path).exists() {
+        args.push("--ro-bind".into());
+        args.push(config_path.clone());
+        args.push(config_path);
+    }
 
     // ═══════════════════════════════════════════════════════
     // Working directory
@@ -116,20 +158,85 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     args.push("--chdir".into());
     args.push(config.workspace.clone());
 
-    // ═══════════════════════════════════════════════════════
-    // Config file protection (read-only)
-    // ═══════════════════════════════════════════════════════
-    let config_path = format!("{}/.cato.toml", config.workspace);
-    if std::path::Path::new(&config_path).exists() {
-        args.push("--ro-bind".into());
-        args.push(config_path.clone());
-        args.push(config_path);
-    }
-
-    // Separator between bwrap args and the command
+    // Separator
     args.push("--".into());
 
     args
+}
+
+/// Resolve glob patterns against the workspace directory.
+/// Walks the workspace and returns absolute paths of files matching any pattern.
+fn resolve_patterns(workspace: &str, patterns: &[String]) -> Vec<String> {
+    let mut matches = Vec::new();
+    let workspace_path = Path::new(workspace);
+
+    if let Ok(entries) = walk_dir(workspace_path) {
+        for entry in entries {
+            let filename = entry.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let relative = entry.strip_prefix(workspace)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            for pattern in patterns {
+                if matches_glob(&filename, &relative, pattern) {
+                    matches.push(entry.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    matches
+}
+
+/// Walk directory recursively, collecting file paths
+fn walk_dir(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut results = Vec::new();
+    if !path.is_dir() {
+        return Ok(results);
+    }
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip .git for performance
+            if path.file_name().map(|n| n == ".git").unwrap_or(false) {
+                continue;
+            }
+            if let Ok(mut sub) = walk_dir(&path) {
+                results.append(&mut sub);
+            }
+        } else {
+            results.push(path);
+        }
+    }
+    Ok(results)
+}
+
+/// Check if a filename/path matches a deny pattern
+fn matches_glob(filename: &str, relative_path: &str, pattern: &str) -> bool {
+    if pattern.starts_with("**/") {
+        // Recursive: **/.ssh/*
+        let suffix = &pattern[3..];
+        relative_path.contains(suffix) || filename == suffix
+    } else if pattern.starts_with("*.") {
+        // Extension: *.env, *.key, *.pem
+        let ext = &pattern[1..];
+        filename.ends_with(ext)
+    } else if pattern.ends_with("/*") {
+        // Directory glob: .github/*
+        let dir = &pattern[..pattern.len() - 2];
+        relative_path.starts_with(dir)
+    } else if pattern.contains('*') {
+        // Wildcard: *credentials*
+        let parts: Vec<&str> = pattern.split('*').filter(|s| !s.is_empty()).collect();
+        parts.iter().all(|part| filename.contains(part))
+    } else {
+        // Exact filename: id_rsa, .git-credentials
+        filename == pattern
+    }
 }
 
 #[cfg(test)]
@@ -150,22 +257,17 @@ mod tests {
         };
 
         let args = generate_args(&config);
-
-        // Should include namespace isolation
         assert!(args.contains(&"--unshare-pid".to_string()));
         assert!(args.contains(&"--unshare-net".to_string()));
         assert!(args.contains(&"--die-with-parent".to_string()));
 
-        // Should include chdir to workspace
         let chdir_idx = args.iter().position(|a| a == "--chdir").unwrap();
         assert_eq!(args[chdir_idx + 1], "/home/user/project");
-
-        // Should end with --
         assert_eq!(args.last().unwrap(), "--");
     }
 
     #[test]
-    fn test_unrestricted_network_no_unshare() {
+    fn test_unrestricted_network() {
         let config = ResolvedConfig {
             workspace: "/home/user/project".into(),
             allow_write: vec!["/home/user/project".into()],
@@ -177,7 +279,19 @@ mod tests {
         };
 
         let args = generate_args(&config);
-        // With ["*"], network should NOT be unshared
         assert!(!args.contains(&"--unshare-net".to_string()));
+    }
+
+    #[test]
+    fn test_glob_matching() {
+        assert!(matches_glob(".env", ".env", "*.env"));
+        assert!(matches_glob("prod.env", "prod.env", "*.env"));
+        assert!(matches_glob(".env.local", ".env.local", "*.env.*"));
+        assert!(matches_glob("secret.key", "certs/secret.key", "*.key"));
+        assert!(matches_glob("id_rsa", ".ssh/id_rsa", "id_rsa"));
+        assert!(matches_glob("aws_credentials", "config/aws_credentials", "*credentials*"));
+        assert!(matches_glob("deploy.yml", ".github/deploy.yml", ".github/*"));
+        assert!(!matches_glob("main.rs", "src/main.rs", "*.env"));
+        assert!(!matches_glob("README.md", "README.md", "*.key"));
     }
 }
