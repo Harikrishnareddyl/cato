@@ -20,8 +20,8 @@ jobs:
             target
           key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install bubblewrap
-        run: sudo apt-get install -y bubblewrap
+      - name: Install bubblewrap and socat
+        run: sudo apt-get install -y bubblewrap socat
 
       - name: Build LD_PRELOAD deny library
         run: |
@@ -369,6 +369,98 @@ jobs:
             exit 1
           fi
           rm -rf "$TESTDIR"
+
+      - name: Test raw bwrap socat bridge
+        timeout-minutes: 1
+        run: |
+          echo "=== Test: raw socat bridge inside bwrap --unshare-net ==="
+          SOCK="/tmp/cato-test-bridge.sock"
+
+          # Start a simple TCP server on host port 9999
+          socat TCP-LISTEN:9999,fork,reuseaddr SYSTEM:'echo HTTP/1.1 200 OK; echo; echo BRIDGE_WORKS' &
+          SERVER_PID=$!
+          sleep 0.2
+
+          # Bridge: Unix socket → TCP 9999
+          socat UNIX-LISTEN:$SOCK,fork,reuseaddr TCP:127.0.0.1:9999 &
+          BRIDGE_PID=$!
+          sleep 0.2
+
+          # Inside bwrap with --unshare-net: socat TCP-LISTEN → Unix socket
+          OUTPUT=$(bwrap \
+            --ro-bind /usr /usr \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --ro-bind /bin /bin \
+            --ro-bind /sbin /sbin \
+            --ro-bind /etc /etc \
+            --proc /proc \
+            --dev /dev \
+            --tmpfs /tmp \
+            --bind $SOCK $SOCK \
+            --unshare-pid \
+            --unshare-net \
+            --die-with-parent \
+            -- /bin/sh -c "
+              echo 'lo status:' && ip link show lo 2>&1 || true
+              echo 'trying socat bridge...'
+              socat TCP-LISTEN:3128,fork,reuseaddr UNIX-CONNECT:$SOCK &
+              sleep 0.3
+              curl -s --proxy http://127.0.0.1:3128 --max-time 5 http://example.com 2>&1 || echo 'curl failed'
+              kill %1 2>/dev/null
+            " 2>&1) || true
+
+          echo "$OUTPUT"
+          kill $BRIDGE_PID $SERVER_PID 2>/dev/null || true
+          rm -f $SOCK
+
+          if echo "$OUTPUT" | grep -q "BRIDGE_WORKS"; then
+            echo "PASS: socat bridge works inside --unshare-net"
+          else
+            echo "INFO: socat bridge did not work — loopback may be down"
+            echo "  Checking if ip link set lo up helps..."
+
+            # Try again with explicit lo up
+            socat TCP-LISTEN:9998,fork,reuseaddr SYSTEM:'echo HTTP/1.1 200 OK; echo; echo BRIDGE_V2' &
+            SERVER_PID=$!
+            SOCK2="/tmp/cato-test-bridge2.sock"
+            socat UNIX-LISTEN:$SOCK2,fork,reuseaddr TCP:127.0.0.1:9998 &
+            BRIDGE_PID=$!
+            sleep 0.2
+
+            OUTPUT2=$(bwrap \
+              --ro-bind /usr /usr \
+              --ro-bind /lib /lib \
+              --ro-bind /lib64 /lib64 \
+              --ro-bind /bin /bin \
+              --ro-bind /sbin /sbin \
+              --ro-bind /etc /etc \
+              --proc /proc \
+              --dev /dev \
+              --tmpfs /tmp \
+              --bind $SOCK2 $SOCK2 \
+              --unshare-user \
+              --unshare-pid \
+              --unshare-net \
+              --die-with-parent \
+              -- /bin/sh -c "
+                ip link set lo up 2>&1 || echo 'ip link set lo up failed'
+                socat TCP-LISTEN:3128,fork,reuseaddr UNIX-CONNECT:$SOCK2 &
+                sleep 0.3
+                curl -s --proxy http://127.0.0.1:3128 --max-time 5 http://example.com 2>&1 || echo 'curl failed v2'
+                kill %1 2>/dev/null
+              " 2>&1) || true
+
+            echo "$OUTPUT2"
+            kill $BRIDGE_PID $SERVER_PID 2>/dev/null || true
+            rm -f $SOCK2
+
+            if echo "$OUTPUT2" | grep -q "BRIDGE_V2"; then
+              echo "PASS: socat bridge works with --unshare-user + ip link set lo up"
+            else
+              echo "FAIL: socat bridge not working"
+            fi
+          fi
 
       - name: Test network domain filtering (proxy)
         run: |
