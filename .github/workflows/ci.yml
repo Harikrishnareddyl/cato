@@ -7,11 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [macos-latest]
-    runs-on: ${{ matrix.os }}
+  test-macos:
+    name: test (macos-latest)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +19,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run unit tests
         run: cargo test
@@ -29,12 +27,12 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Run smoke tests
+      - name: Run smoke tests (macOS sandbox)
         run: chmod +x tests/smoke_test.sh && ./tests/smoke_test.sh
 
-  # Build check on Linux (sandbox features are macOS only, but code should compile)
-  build-linux:
-    runs-on: ubuntu-latest
+  test-linux:
+    name: build-linux
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,11 +42,183 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build check
-        run: cargo build --release
-      - name: Unit tests
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install bubblewrap and socat
+        run: sudo apt-get install -y bubblewrap socat
+
+      - name: Run unit tests
         run: cargo test
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Build LD_PRELOAD deny library
+        run: |
+          gcc -shared -fPIC -o target/release/libcato_deny.so src/sandbox/preload/deny_open.c -ldl
+
+      - name: "Test: cato init"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          $GITHUB_WORKSPACE/target/release/cato init
+          cat .cato.toml
+          rm -rf "$TESTDIR"
+
+      - name: "Test: cato run basic command"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/echo "sandbox works on linux"
+          rm -rf "$TESTDIR"
+
+      - name: "Test: deny_read enforcement"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_read = ["*.env", "*.key", "*.pem"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "SECRET" > .env && echo "KEY" > secret.key && echo "CERT" > server.pem
+          echo "normal" > test.txt
+
+          $GITHUB_WORKSPACE/target/release/cato run -- cat test.txt
+          echo "PASS: normal file readable"
+
+          for f in .env secret.key server.pem; do
+            EXIT=0
+            $GITHUB_WORKSPACE/target/release/cato run -- cat $f 2>&1 || EXIT=$?
+            if [ $EXIT -ne 0 ]; then echo "PASS: $f blocked"; else echo "FAIL: $f should be blocked"; exit 1; fi
+          done
+          rm -rf "$TESTDIR"
+
+      - name: "Test: deny_write enforcement"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_write = ["*.lock"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "existing" > yarn.lock
+
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo ok > normal.txt'
+          echo "PASS: normal write allowed"
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo x > yarn.lock' 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then echo "PASS: deny_write blocked"; else echo "FAIL: should be blocked"; exit 1; fi
+          rm -rf "$TESTDIR"
+
+      - name: "Test: home dir hidden"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- ls $HOME/Documents 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then echo "PASS: home hidden"; else echo "FAIL"; exit 1; fi
+          rm -rf "$TESTDIR"
+
+      - name: "Test: .cato.toml protection"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo x >> .cato.toml' 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then echo "PASS: config protected"; else echo "FAIL"; exit 1; fi
+          rm -rf "$TESTDIR"
+
+      - name: "Test: CATO_SANDBOX env + exit code forwarding"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo $CATO_SANDBOX' 2>/dev/null)
+          if [ "$OUTPUT" = "1" ]; then echo "PASS: CATO_SANDBOX=1"; else echo "FAIL"; exit 1; fi
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'exit 42' 2>/dev/null || EXIT=$?
+          if [ $EXIT -eq 42 ]; then echo "PASS: exit 42 forwarded"; else echo "FAIL: got $EXIT"; exit 1; fi
+          rm -rf "$TESTDIR"
+
+      - name: "Test: network blocked (empty list)"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = []
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- curl -s --max-time 5 https://example.com 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then echo "PASS: network blocked"; else echo "FAIL"; exit 1; fi
+          rm -rf "$TESTDIR"
+
+      - name: "Test: network domain filtering (socat bridge)"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["example.com"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://example.com 2>/dev/null)
+          if [ "$OUTPUT" = "200" ]; then echo "PASS: example.com allowed"; else echo "FAIL: got $OUTPUT"; exit 1; fi
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null --max-time 5 https://google.com 2>/dev/null || EXIT=$?
+          if [ $EXIT -ne 0 ]; then echo "PASS: google.com blocked"; else echo "FAIL"; exit 1; fi
+          rm -rf "$TESTDIR"
+
+      - name: "Test: ephemeral mode"
+        run: |
+          TESTDIR=$(mktemp -d) && cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "original" > eph-file.txt
+          $GITHUB_WORKSPACE/target/release/cato run --ephemeral -- /bin/sh -c 'echo modified > eph-file.txt; echo new > eph-new.txt' 2>/dev/null
+          CONTENT=$(cat "$TESTDIR/eph-file.txt")
+          if [ "$CONTENT" = "original" ]; then echo "PASS: ephemeral unchanged"; else echo "FAIL"; exit 1; fi
+          if [ ! -f "$TESTDIR/eph-new.txt" ]; then echo "PASS: ephemeral no leak"; else echo "FAIL"; exit 1; fi
+          rm -rf "$TESTDIR"
 
   security:
     runs-on: ubuntu-latest
