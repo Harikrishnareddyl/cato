@@ -388,9 +388,10 @@ jobs:
           fi
 
           # Blocked domain should fail
-          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://google.com 2>/dev/null)
-          if [ "$OUTPUT" != "200" ]; then
-            echo "PASS: google.com blocked ($OUTPUT)"
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://google.com 2>/dev/null || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: google.com blocked (exit $EXIT)"
           else
             echo "FAIL: google.com should be blocked"
             exit 1
