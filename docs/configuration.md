@@ -149,10 +149,127 @@ network = []
 
 ## Presets
 
-```bash
-cato init              # standard defaults (workspace writable, common deny patterns)
-cato init --minimal    # just secrets protection
-cato init --strict     # tighter deny_write, more patterns
+`cato init` generates a `.cato.toml` based on a preset. It also auto-detects your project type (Node.js, Python, Rust, Go, etc.) and populates `tools` and `network` accordingly.
+
+### `cato init` — Standard (default)
+
+Workspace writable, common secret patterns denied, lockfiles protected, network includes detected package registries.
+
+```toml
+[sandbox]
+allow_write = ["{workspace}", "/tmp"]
+
+deny_write = [
+    "*.lock",
+]
+
+deny_read = [
+    "*.env",
+    "*.env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "id_rsa",
+    "id_ed25519",
+    "*credentials*",
+    "*.keystore",
+    ".git-credentials",
+]
+
+# Auto-populated based on project type
+network = [
+    "github.com",
+    "registry.npmjs.org",    # if Node.js detected
+    "pypi.org",              # if Python detected
+    "files.pythonhosted.org", # if Python detected
+    "crates.io",             # if Rust detected
+]
+
+tools = []  # auto-populated: git, node, npm, python3, cargo, etc.
+
+[sandbox.secrets]
+# ANTHROPIC_API_KEY = {}
+# DATABASE_URL = { default = "postgres://localhost/mydb" }
+
+[sandbox.options]
+ssh_agent = true
+allow_localhost = true
+```
+
+### `cato init --minimal` — Minimal
+
+Just secret file protection. No deny_write patterns. Fewer deny_read patterns. Network only includes detected sources.
+
+```toml
+[sandbox]
+allow_write = ["{workspace}", "/tmp"]
+
+deny_write = [
+    "*.lock",
+]
+
+deny_read = [
+    "*.env",
+    "*.env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "id_rsa",
+    "id_ed25519",
+]
+
+network = [
+    "github.com",
+]
+
+tools = []
+
+[sandbox.secrets]
+
+[sandbox.options]
+ssh_agent = true
+allow_localhost = true
+```
+
+### `cato init --strict` — Strict
+
+Everything from standard plus: CI configs and migrations protected from writes.
+
+```toml
+[sandbox]
+allow_write = ["{workspace}", "/tmp"]
+
+deny_write = [
+    "*.lock",
+    ".github/*",
+    "migrations/*",
+]
+
+deny_read = [
+    "*.env",
+    "*.env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "id_rsa",
+    "id_ed25519",
+    "*credentials*",
+    "*.keystore",
+    ".git-credentials",
+]
+
+network = [
+    "github.com",
+    "registry.npmjs.org",
+]
+
+tools = []
+
+[sandbox.secrets]
+
+[sandbox.options]
+ssh_agent = true
+allow_localhost = true
 ```
 
 ## Tips
@@ -162,3 +279,4 @@ cato init --strict     # tighter deny_write, more patterns
 - Use `CATO_DEBUG=1 cato run` to inspect the generated sandbox profile
 - `deny_write = ["*.lock"]` prevents agents from modifying lockfiles
 - Remove `{workspace}` from `allow_write` for a read-only sandbox
+- The presets are starting points — edit the generated file to fit your project
