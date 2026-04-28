@@ -244,7 +244,7 @@ jobs:
 
           # Writing to existing .lock file should be blocked (ro-bind)
           EXIT=0
-          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo modified > package-lock.json' 2>&1 || EXIT=$?
+          CATO_DEBUG=1 $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo modified > package-lock.json' 2>&1 || EXIT=$?
           if [ $EXIT -ne 0 ]; then
             echo "PASS: deny_write *.lock blocked (exit $EXIT)"
           else

@@ -137,8 +137,11 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
             args.push(file_path.clone());
             args.push(file_path.clone());
         }
-        if std::env::var("CATO_DEBUG").is_ok() && !matches.is_empty() {
-            eprintln!("[cato] deny_write: protecting {} files as read-only", matches.len());
+        if std::env::var("CATO_DEBUG").is_ok() {
+            eprintln!("[cato] deny_write: {} patterns matched {} files", config.deny_write.len(), matches.len());
+            for m in &matches {
+                eprintln!("[cato]   ro-bind: {}", m);
+            }
         }
     }
 
