@@ -365,6 +365,38 @@ jobs:
           fi
           rm -rf "$TESTDIR"
 
+      - name: Test network domain filtering (proxy)
+        run: |
+          echo "=== Test: network domain filtering on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["example.com"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          # Allowed domain should work
+          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://example.com 2>/dev/null)
+          if [ "$OUTPUT" = "200" ]; then
+            echo "PASS: example.com allowed (200)"
+          else
+            echo "FAIL: example.com should return 200 (got: $OUTPUT)"
+            exit 1
+          fi
+
+          # Blocked domain should fail
+          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://google.com 2>/dev/null)
+          if [ "$OUTPUT" != "200" ]; then
+            echo "PASS: google.com blocked ($OUTPUT)"
+          else
+            echo "FAIL: google.com should be blocked"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
       - name: Test ephemeral mode
         run: |
           echo "=== Test: ephemeral mode on Linux ==="

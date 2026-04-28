@@ -20,11 +20,21 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
     args.push("--unshare-uts".into());
     args.push("--unshare-ipc".into());
 
-    // Network: isolate unless unrestricted
+    // Network isolation:
+    // - empty list: --unshare-net (kernel blocks everything)
+    // - ["*"]: no isolation (unrestricted)
+    // - specific domains: keep host network, proxy filters domains
+    //   (full kernel isolation with proxy bridge planned for future)
     let network_unrestricted = config.network.iter().any(|d| d == "*");
-    if !network_unrestricted {
+    let network_has_domains = !config.network.is_empty() && !network_unrestricted;
+    if config.network.is_empty() {
+        // Empty = block all outbound at kernel level
         args.push("--unshare-net".into());
+    } else if network_has_domains {
+        // Specific domains: keep host network for proxy access
+        // Proxy enforces domain filtering via env vars
     }
+    // ["*"]: no --unshare-net, full access
 
     // Die with parent (cleanup on terminal close)
     args.push("--die-with-parent".into());
