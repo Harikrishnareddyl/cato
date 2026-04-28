@@ -100,25 +100,131 @@ fn run_linux(
         return 1;
     }
 
+    // Set up socat bridge if network domains configured
+    let network_needs_proxy = !resolved.network.is_empty()
+        && !resolved.network.iter().any(|d| d == "*");
+    let has_socat = which("socat").is_some();
+
+    let proxy_bridge = if network_needs_proxy && has_socat {
+        // Find proxy port from injected env vars
+        let proxy_port = env_vars.iter()
+            .find(|(k, _)| k == "http_proxy")
+            .and_then(|(_, v)| v.rsplit(':').next())
+            .and_then(|p| p.parse::<u16>().ok());
+
+        if let Some(port) = proxy_port {
+            let socket_id = std::process::id();
+            let socket_path = format!("/tmp/cato-http-{}.sock", socket_id);
+            let inner_port = 3128u16;
+
+            // Host-side socat: Unix socket → TCP proxy
+            // (matches Anthropic: UNIX-LISTEN + TCP with keepalive)
+            let child = std::process::Command::new("socat")
+                .arg(format!("UNIX-LISTEN:{},fork,reuseaddr", socket_path))
+                .arg(format!("TCP:localhost:{},keepalive,keepidle=10,keepintvl=5,keepcnt=3", port))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+
+            match child {
+                Ok(_) => {
+                    // Poll for socket existence (matches Anthropic: 5 attempts, backoff)
+                    let mut ready = false;
+                    for i in 0..10 {
+                        if Path::new(&socket_path).exists() {
+                            ready = true;
+                            if std::env::var("CATO_DEBUG").is_ok() {
+                                eprintln!("[cato] socat bridge ready after {} attempts", i + 1);
+                            }
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50 * (i as u64 + 1)));
+                    }
+                    if !ready {
+                        eprintln!("[cato] warning: socat bridge socket not created");
+                        None
+                    } else {
+                        Some(super::bwrap::ProxyBridge { socket_path, inner_port })
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[cato] warning: failed to start socat: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else if network_needs_proxy && !has_socat {
+        eprintln!("[cato] warning: socat not found — network domain filtering disabled");
+        eprintln!("  Install: sudo apt install socat");
+        None
+    } else {
+        None
+    };
+
     // Generate bwrap arguments
-    let bwrap_args = super::bwrap::generate_args(resolved, None);
+    let bwrap_args = super::bwrap::generate_args(resolved, proxy_bridge.as_ref());
 
     let mut cmd = std::process::Command::new("bwrap");
     for arg in &bwrap_args {
         cmd.arg(arg);
     }
 
-    if let Some(ref args) = command {
-        for arg in args {
-            cmd.arg(arg);
-        }
+    // If proxy bridge active, wrap command with inner socat
+    // (matches Anthropic: socat TCP-LISTEN → UNIX-CONNECT, trap, eval)
+    if let Some(ref bridge) = proxy_bridge {
+        let user_cmd = if let Some(ref args) = command {
+            args.join(" ")
+        } else {
+            shell.clone()
+        };
+
+        cmd.arg("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "socat TCP-LISTEN:{port},fork,reuseaddr UNIX-CONNECT:{sock} >/dev/null 2>&1 &\n\
+             trap 'kill %1 2>/dev/null; exit' EXIT\n\
+             sleep 0.2\n\
+             eval {cmd}",
+            port = bridge.inner_port,
+            sock = bridge.socket_path,
+            cmd = shell_quote(&user_cmd),
+        ));
     } else {
-        cmd.arg(&shell);
+        if let Some(ref args) = command {
+            for arg in args {
+                cmd.arg(arg);
+            }
+        } else {
+            cmd.arg(&shell);
+        }
     }
 
     // Clear environment and set only what we want
     cmd.env_clear();
-    set_common_env(&mut cmd, resolved, &env_vars);
+
+    if proxy_bridge.is_some() {
+        // Filter out host proxy vars, set inner proxy vars instead
+        let filtered: Vec<(String, String)> = env_vars.into_iter()
+            .filter(|(k, _)| {
+                !k.eq_ignore_ascii_case("http_proxy")
+                    && !k.eq_ignore_ascii_case("https_proxy")
+                    && !k.eq_ignore_ascii_case("no_proxy")
+            })
+            .collect();
+        set_common_env(&mut cmd, resolved, &filtered);
+        // Inner proxy vars point to the socat listener inside sandbox
+        cmd.env("http_proxy", "http://127.0.0.1:3128");
+        cmd.env("https_proxy", "http://127.0.0.1:3128");
+        cmd.env("HTTP_PROXY", "http://127.0.0.1:3128");
+        cmd.env("HTTPS_PROXY", "http://127.0.0.1:3128");
+        cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+        cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+    } else {
+        set_common_env(&mut cmd, resolved, &env_vars);
+    }
 
     // Linux-specific: PS1 prompt
     let workspace_name = workspace_short_name(&resolved.workspace);
@@ -143,7 +249,14 @@ fn run_linux(
 
     cmd.current_dir(&resolved.workspace);
 
-    execute_cmd(&mut cmd, "bwrap", Path::new(""), &command, &shell)
+    let exit_code = execute_cmd(&mut cmd, "bwrap", Path::new(""), &command, &shell);
+
+    // Cleanup bridge socket
+    if let Some(ref bridge) = proxy_bridge {
+        let _ = std::fs::remove_file(&bridge.socket_path);
+    }
+
+    exit_code
 }
 
 /// Set environment variables common to all platforms
@@ -225,6 +338,12 @@ fn workspace_short_name(workspace: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "sandbox".to_string())
+}
+
+/// Simple shell quoting — wraps in single quotes, escaping inner single quotes
+#[cfg(target_os = "linux")]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Find the LD_PRELOAD deny library (libcato_deny.so)
