@@ -117,13 +117,25 @@ fn run_linux(
 
         if let Some(port) = proxy_port {
             // Start host-side socat: Unix socket → TCP proxy
-            let _ = std::process::Command::new("socat")
+            match std::process::Command::new("socat")
                 .arg(format!("UNIX-LISTEN:{},fork,reuseaddr,mode=777", socket_path))
                 .arg(format!("TCP:127.0.0.1:{}", port))
-                .spawn();
-
-            // Give socat a moment to create the socket
-            std::thread::sleep(std::time::Duration::from_millis(100));
+                .spawn()
+            {
+                Ok(_child) => {
+                    // Wait for socket file to appear
+                    for _ in 0..20 {
+                        if Path::new(&socket_path).exists() { break; }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    if !Path::new(&socket_path).exists() {
+                        eprintln!("[cato] warning: socat socket not created");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[cato] warning: failed to start socat bridge: {}", e);
+                }
+            }
 
             Some(super::bwrap::ProxyBridge {
                 socket_path,
