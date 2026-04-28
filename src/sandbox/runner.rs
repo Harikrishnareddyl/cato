@@ -210,6 +210,23 @@ fn run_linux(
     let workspace_name = workspace_short_name(&resolved.workspace);
     cmd.env("PS1", format!("🔒 {} \\w $ ", workspace_name));
 
+    // LD_PRELOAD deny library — catches new files matching deny patterns
+    // Look for libcato_deny.so next to the cato binary or in known paths
+    let preload_lib = find_preload_lib();
+    if let Some(ref lib_path) = preload_lib {
+        cmd.env("LD_PRELOAD", lib_path);
+        // Pass deny patterns as comma-separated env vars
+        if !resolved.deny_read.is_empty() {
+            cmd.env("CATO_DENY_READ", resolved.deny_read.join(","));
+        }
+        if !resolved.deny_write.is_empty() {
+            cmd.env("CATO_DENY_WRITE", resolved.deny_write.join(","));
+        }
+        if std::env::var("CATO_DEBUG").is_ok() {
+            eprintln!("[cato] LD_PRELOAD: {}", lib_path);
+        }
+    }
+
     cmd.current_dir(&resolved.workspace);
 
     let exit_code = execute_cmd(&mut cmd, "bwrap", Path::new(""), &command, &shell);
@@ -301,6 +318,31 @@ fn workspace_short_name(workspace: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "sandbox".to_string())
+}
+
+/// Find the LD_PRELOAD deny library (libcato_deny.so)
+/// Searches next to the cato binary, then common install paths
+#[cfg(target_os = "linux")]
+fn find_preload_lib() -> Option<String> {
+    // Next to the cato binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let lib = dir.join("libcato_deny.so");
+            if lib.exists() {
+                return Some(lib.to_string_lossy().to_string());
+            }
+        }
+    }
+    // Common install locations
+    for path in &[
+        "/usr/lib/cato/libcato_deny.so",
+        "/usr/local/lib/cato/libcato_deny.so",
+    ] {
+        if Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    None
 }
 
 fn which(name: &str) -> Option<String> {

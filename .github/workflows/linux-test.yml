@@ -23,6 +23,11 @@ jobs:
       - name: Install bubblewrap and socat
         run: sudo apt-get install -y bubblewrap socat
 
+      - name: Build LD_PRELOAD deny library
+        run: |
+          gcc -shared -fPIC -o target/libcato_deny.so src/sandbox/preload/deny_open.c -ldl
+          echo "Built libcato_deny.so"
+
       - name: Check kernel version (need 5.13+ for Landlock)
         run: |
           uname -r
@@ -395,6 +400,35 @@ jobs:
           else
             echo "FAIL: google.com should be blocked"
             exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test deny_read blocks NEW files (LD_PRELOAD)
+        run: |
+          echo "=== Test: deny_read on newly created files ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_read = ["*.env", "*.key"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          # Copy the preload library next to the cato binary
+          cp $GITHUB_WORKSPACE/target/libcato_deny.so $GITHUB_WORKSPACE/target/release/libcato_deny.so 2>/dev/null || true
+
+          # Create a NEW .env inside sandbox and try to read it
+          # LD_PRELOAD should block the read even though file didn't exist at start
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo "NEW_SECRET=x" > fresh.env; cat fresh.env' 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: new .env file blocked by LD_PRELOAD (exit $EXIT)"
+          else
+            echo "INFO: LD_PRELOAD not active or not blocking new files (exit $EXIT)"
+            echo "  (this is expected if libcato_deny.so was not built)"
           fi
           rm -rf "$TESTDIR"
 

@@ -166,6 +166,21 @@ pub fn generate_args(config: &ResolvedConfig, proxy_bridge: Option<&ProxyBridge>
     }
 
     // ═══════════════════════════════════════════════════════
+    // LD_PRELOAD library — bind into sandbox if found
+    // ═══════════════════════════════════════════════════════
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let lib = dir.join("libcato_deny.so");
+            if lib.exists() {
+                let lib_str = lib.to_string_lossy().to_string();
+                args.push("--ro-bind".into());
+                args.push(lib_str.clone());
+                args.push(lib_str);
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
     // Config file protection (read-only)
     // ═══════════════════════════════════════════════════════
     let config_path = format!("{}/.cato.toml", config.workspace);
@@ -297,8 +312,8 @@ mod tests {
 
         let args = generate_args(&config, None);
         assert!(args.contains(&"--unshare-pid".to_string()));
-        // Specific domains = keep host network for proxy, no --unshare-net
-        assert!(!args.contains(&"--unshare-net".to_string()));
+        // Specific domains = --unshare-net (socat bridge provides proxy access)
+        assert!(args.contains(&"--unshare-net".to_string()));
         assert!(args.contains(&"--die-with-parent".to_string()));
 
         let chdir_idx = args.iter().position(|a| a == "--chdir").unwrap();
