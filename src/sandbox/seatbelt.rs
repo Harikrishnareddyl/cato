@@ -196,15 +196,21 @@ pub fn generate(config: &ResolvedConfig, tool_paths: &[String]) -> String {
                 p.push(format!("(deny file-read-data (subpath \"{}\"))", pattern));
             }
         }
-        // Also deny moves to prevent bypass
+        // Also deny writes to deny_read files (prevent overwriting host secrets)
+        // and deny unlink (prevent deletion/rename bypass)
         for pattern in &config.deny_read {
             if pattern.contains('*') || !pattern.contains('/') {
                 let regex = glob_to_seatbelt_regex(pattern);
+                p.push(format!(
+                    "(deny file-write-data (require-all (subpath \"{}\") (regex #\"{}\")))",
+                    config.workspace, regex
+                ));
                 p.push(format!(
                     "(deny file-write-unlink (require-all (subpath \"{}\") (regex #\"{}\")))",
                     config.workspace, regex
                 ));
             } else {
+                p.push(format!("(deny file-write-data (subpath \"{}\"))", pattern));
                 p.push(format!("(deny file-write-unlink (subpath \"{}\"))", pattern));
             }
         }
