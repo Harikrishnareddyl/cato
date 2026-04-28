@@ -222,6 +222,181 @@ jobs:
           fi
           rm -rf "$TESTDIR"
 
+      - name: Test cato deny_write enforcement
+        run: |
+          echo "=== Test: deny_write on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_write = ["*.lock"]
+          deny_read = ["*.env"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "existing" > package-lock.json
+
+          # Normal write should work
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo ok > normal.txt'
+          echo "PASS: normal write allowed"
+
+          # Writing to existing .lock file should be blocked (ro-bind)
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo modified > package-lock.json' 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: deny_write *.lock blocked (exit $EXIT)"
+          else
+            echo "FAIL: *.lock write should be blocked"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test cato deny_read .key files
+        run: |
+          echo "=== Test: deny_read *.key on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          deny_read = ["*.env", "*.key", "*.pem"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "PRIVATE" > secret.key
+          echo "CERT" > server.pem
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- cat secret.key 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: .key blocked (exit $EXIT)"
+          else
+            echo "FAIL: .key should be blocked"
+            exit 1
+          fi
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- cat server.pem 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: .pem blocked (exit $EXIT)"
+          else
+            echo "FAIL: .pem should be blocked"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test cato .cato.toml protection
+        run: |
+          echo "=== Test: .cato.toml tamper-proof on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo hacked >> .cato.toml' 2>&1 || EXIT=$?
+          if [ $EXIT -ne 0 ]; then
+            echo "PASS: .cato.toml write blocked (exit $EXIT)"
+          else
+            echo "FAIL: .cato.toml should be protected"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test CATO_SANDBOX env var
+        run: |
+          echo "=== Test: CATO_SANDBOX env on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'echo $CATO_SANDBOX' 2>/dev/null)
+          if [ "$OUTPUT" = "1" ]; then
+            echo "PASS: CATO_SANDBOX=1"
+          else
+            echo "FAIL: CATO_SANDBOX should be 1 (got: $OUTPUT)"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test exit code forwarding
+        run: |
+          echo "=== Test: exit code forwarding on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'exit 0' 2>/dev/null || EXIT=$?
+          if [ $EXIT -eq 0 ]; then
+            echo "PASS: exit 0 forwarded"
+          else
+            echo "FAIL: exit 0 not forwarded (got $EXIT)"
+            exit 1
+          fi
+
+          EXIT=0
+          $GITHUB_WORKSPACE/target/release/cato run -- /bin/sh -c 'exit 42' 2>/dev/null || EXIT=$?
+          if [ $EXIT -eq 42 ]; then
+            echo "PASS: exit 42 forwarded"
+          else
+            echo "FAIL: exit 42 not forwarded (got $EXIT)"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
+      - name: Test ephemeral mode
+        run: |
+          echo "=== Test: ephemeral mode on Linux ==="
+          TESTDIR=$(mktemp -d)
+          cd "$TESTDIR"
+          cat > .cato.toml << 'EOF'
+          [sandbox]
+          allow_write = ["{workspace}", "/tmp"]
+          network = ["*"]
+          [sandbox.options]
+          allow_localhost = true
+          EOF
+          echo "original" > eph-file.txt
+
+          $GITHUB_WORKSPACE/target/release/cato run --ephemeral -- /bin/sh -c 'echo modified > eph-file.txt; echo new > eph-new.txt' 2>/dev/null
+
+          CONTENT=$(cat "$TESTDIR/eph-file.txt")
+          if [ "$CONTENT" = "original" ]; then
+            echo "PASS: ephemeral — original unchanged"
+          else
+            echo "FAIL: ephemeral — file was modified (got: $CONTENT)"
+            exit 1
+          fi
+
+          if [ ! -f "$TESTDIR/eph-new.txt" ]; then
+            echo "PASS: ephemeral — new file not persisted"
+          else
+            echo "FAIL: ephemeral — new file leaked"
+            exit 1
+          fi
+          rm -rf "$TESTDIR"
+
   test-macos:
     runs-on: macos-latest
     steps:
