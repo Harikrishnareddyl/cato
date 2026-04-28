@@ -100,25 +100,111 @@ fn run_linux(
         return 1;
     }
 
+    // Set up proxy bridge if network domains are configured
+    let network_needs_proxy = !resolved.network.is_empty()
+        && !resolved.network.iter().any(|d| d == "*");
+    let has_socat = which("socat").is_some();
+
+    let proxy_bridge = if network_needs_proxy && has_socat {
+        let socket_path = format!("/tmp/cato-proxy-{}.sock", std::process::id());
+        let inner_port = 3128u16;
+
+        // Find the proxy port from env vars
+        let proxy_port = env_vars.iter()
+            .find(|(k, _)| k == "http_proxy" || k == "HTTP_PROXY")
+            .and_then(|(_, v)| v.rsplit(':').next())
+            .and_then(|p| p.parse::<u16>().ok());
+
+        if let Some(port) = proxy_port {
+            // Start host-side socat: Unix socket → TCP proxy
+            let _ = std::process::Command::new("socat")
+                .arg(format!("UNIX-LISTEN:{},fork,reuseaddr,mode=777", socket_path))
+                .arg(format!("TCP:127.0.0.1:{}", port))
+                .spawn();
+
+            // Give socat a moment to create the socket
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            Some(super::bwrap::ProxyBridge {
+                socket_path,
+                inner_port,
+            })
+        } else {
+            None
+        }
+    } else if network_needs_proxy && !has_socat {
+        eprintln!("[cato] warning: socat not found — network domain filtering reduced");
+        eprintln!("  Install: sudo apt install socat");
+        None
+    } else {
+        None
+    };
+
     // Generate bwrap arguments
-    let bwrap_args = super::bwrap::generate_args(resolved);
+    let bwrap_args = super::bwrap::generate_args(resolved, proxy_bridge.as_ref());
 
     let mut cmd = std::process::Command::new("bwrap");
     for arg in &bwrap_args {
         cmd.arg(arg);
     }
 
-    if let Some(ref args) = command {
-        for arg in args {
-            cmd.arg(arg);
-        }
+    // If proxy bridge active, wrap command with inner socat
+    if let Some(ref bridge) = proxy_bridge {
+        let user_cmd = if let Some(ref args) = command {
+            args.join(" ")
+        } else {
+            shell.clone()
+        };
+
+        // Inner socat: listen on TCP port, forward to Unix socket
+        // Then run the user's command
+        cmd.arg("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "socat TCP-LISTEN:{port},fork,reuseaddr,bind=127.0.0.1 UNIX-CONNECT:{sock} &\n\
+             SOCAT_PID=$!\n\
+             sleep 0.1\n\
+             export http_proxy=http://127.0.0.1:{port}\n\
+             export https_proxy=http://127.0.0.1:{port}\n\
+             export HTTP_PROXY=http://127.0.0.1:{port}\n\
+             export HTTPS_PROXY=http://127.0.0.1:{port}\n\
+             export no_proxy=localhost,127.0.0.1,::1\n\
+             export NO_PROXY=localhost,127.0.0.1,::1\n\
+             {cmd}\n\
+             EXIT=$?\n\
+             kill $SOCAT_PID 2>/dev/null\n\
+             exit $EXIT",
+            port = bridge.inner_port,
+            sock = bridge.socket_path,
+            cmd = user_cmd,
+        ));
     } else {
-        cmd.arg(&shell);
+        if let Some(ref args) = command {
+            for arg in args {
+                cmd.arg(arg);
+            }
+        } else {
+            cmd.arg(&shell);
+        }
     }
 
     // Clear environment and set only what we want
     cmd.env_clear();
-    set_common_env(&mut cmd, resolved, &env_vars);
+
+    // When proxy bridge is active, DON'T set host proxy vars
+    // (inner socat sets them correctly)
+    if proxy_bridge.is_some() {
+        let filtered_vars: Vec<(String, String)> = env_vars.into_iter()
+            .filter(|(k, _)| {
+                !k.eq_ignore_ascii_case("http_proxy")
+                    && !k.eq_ignore_ascii_case("https_proxy")
+                    && !k.eq_ignore_ascii_case("no_proxy")
+            })
+            .collect();
+        set_common_env(&mut cmd, resolved, &filtered_vars);
+    } else {
+        set_common_env(&mut cmd, resolved, &env_vars);
+    }
 
     // Linux-specific: PS1 prompt
     let workspace_name = workspace_short_name(&resolved.workspace);
@@ -128,9 +214,10 @@ fn run_linux(
 
     let exit_code = execute_cmd(&mut cmd, "bwrap", Path::new(""), &command, &shell);
 
-    // Apply Landlock rules (deny_read/deny_write within mounted paths)
-    // Note: Landlock is applied by bwrap.rs via a wrapper script inside the sandbox
-    // or via the landlock module before exec
+    // Cleanup proxy bridge socket
+    if let Some(ref bridge) = proxy_bridge {
+        let _ = std::fs::remove_file(&bridge.socket_path);
+    }
 
     exit_code
 }

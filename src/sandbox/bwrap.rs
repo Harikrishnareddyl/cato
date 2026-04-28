@@ -10,7 +10,13 @@ use std::path::{Path, PathBuf};
 /// - deny_read: resolve matching files, bind /dev/null over them
 /// - deny_write: resolve matching files, bind read-only over them
 /// - Network: --unshare-net to block all (proxy forwarded separately)
-pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
+/// Optional proxy socket path to bind into the sandbox
+pub struct ProxyBridge {
+    pub socket_path: String,
+    pub inner_port: u16,
+}
+
+pub fn generate_args(config: &ResolvedConfig, proxy_bridge: Option<&ProxyBridge>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     // ═══════════════════════════════════════════════════════
@@ -22,19 +28,23 @@ pub fn generate_args(config: &ResolvedConfig) -> Vec<String> {
 
     // Network isolation:
     // - empty list: --unshare-net (kernel blocks everything)
+    // - specific domains: --unshare-net + socat bridge to proxy
     // - ["*"]: no isolation (unrestricted)
-    // - specific domains: keep host network, proxy filters domains
-    //   (full kernel isolation with proxy bridge planned for future)
     let network_unrestricted = config.network.iter().any(|d| d == "*");
-    let network_has_domains = !config.network.is_empty() && !network_unrestricted;
-    if config.network.is_empty() {
-        // Empty = block all outbound at kernel level
+    if !network_unrestricted {
+        // Block all outbound at kernel level
         args.push("--unshare-net".into());
-    } else if network_has_domains {
-        // Specific domains: keep host network for proxy access
-        // Proxy enforces domain filtering via env vars
     }
-    // ["*"]: no --unshare-net, full access
+
+    // Bind proxy socket into sandbox (if domain filtering active)
+    if let Some(bridge) = proxy_bridge {
+        let sock = &bridge.socket_path;
+        if Path::new(sock).exists() {
+            args.push("--bind".into());
+            args.push(sock.clone());
+            args.push(sock.clone());
+        }
+    }
 
     // Die with parent (cleanup on terminal close)
     args.push("--die-with-parent".into());
@@ -285,7 +295,7 @@ mod tests {
             options: SandboxOptions { ssh_agent: false, allow_localhost: true },
         };
 
-        let args = generate_args(&config);
+        let args = generate_args(&config, None);
         assert!(args.contains(&"--unshare-pid".to_string()));
         // Specific domains = keep host network for proxy, no --unshare-net
         assert!(!args.contains(&"--unshare-net".to_string()));
@@ -308,7 +318,7 @@ mod tests {
             options: SandboxOptions { ssh_agent: false, allow_localhost: true },
         };
 
-        let args = generate_args(&config);
+        let args = generate_args(&config, None);
         assert!(!args.contains(&"--unshare-net".to_string()));
     }
 
@@ -324,7 +334,7 @@ mod tests {
             options: SandboxOptions { ssh_agent: false, allow_localhost: true },
         };
 
-        let args = generate_args(&config);
+        let args = generate_args(&config, None);
         // Empty network = --unshare-net (kernel blocks all)
         assert!(args.contains(&"--unshare-net".to_string()));
     }

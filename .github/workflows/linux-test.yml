@@ -20,8 +20,8 @@ jobs:
             target
           key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install bubblewrap
-        run: sudo apt-get install -y bubblewrap
+      - name: Install bubblewrap and socat
+        run: sudo apt-get install -y bubblewrap socat
 
       - name: Check kernel version (need 5.13+ for Landlock)
         run: |
