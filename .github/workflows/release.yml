@@ -1,0 +1,276 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: cato-macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: cato-macos-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: cato-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset: cato-linux-arm64
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: cato-windows-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Run tests
+        if: ${{ !matrix.cross }}
+        run: cargo test
+
+      - name: Build release
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Run smoke tests
+        if: ${{ !matrix.cross && runner.os != 'Windows' }}
+        run: |
+          cp target/${{ matrix.target }}/release/cato target/release/cato 2>/dev/null || true
+          chmod +x tests/smoke_test.sh && ./tests/smoke_test.sh
+
+      - name: Build release (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          DIST="${{ matrix.asset }}-${VERSION}"
+          mkdir -p "$DIST"
+          cp target/${{ matrix.target }}/release/cato "$DIST/"
+          cp scripts/install.sh "$DIST/" 2>/dev/null || true
+          chmod 755 "$DIST/cato"
+          tar czf "${DIST}.tar.gz" "$DIST"
+          echo "ASSET=${DIST}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          $dist = "${{ matrix.asset }}-${version}"
+          New-Item -ItemType Directory -Path $dist -Force
+          Copy-Item "target/${{ matrix.target }}/release/cato.exe" "$dist/"
+          Compress-Archive -Path "$dist/*" -DestinationPath "${dist}.zip"
+          "ASSET=${dist}.zip" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ env.ASSET }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Generate checksums
+        run: |
+          find . -name "*.tar.gz" -o -name "*.zip" | sort | while read f; do
+            shasum -a 256 "$f"
+          done > checksums.txt
+          cat checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            **/*.tar.gz
+            **/*.zip
+            checksums.txt
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            brew tap harikrishnareddyl/cato && brew install cato
+            ```
+
+            or
+
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/Harikrishnareddyl/cato/main/scripts/install.sh | sh
+            ```
+
+  publish-npm:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm package version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cd npm
+          node -e "const p=require('./package.json'); p.version='${VERSION}'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')"
+
+      - name: Publish cato-cli to npm
+        run: cd npm && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish cato-opencode to npm
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cd plugins/opencode
+          node -e "const p=require('./package.json'); p.version='${VERSION}'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')"
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cd pip
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          sed -i "s/__version__ = .*/__version__ = \"${VERSION}\"/" cato_cli/__init__.py
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" cato_cli/wrapper.py
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pip/dist/
+
+  publish-crates:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Update version and publish
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${GITHUB_REF#refs/tags/v}
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
+          cargo publish --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  update-homebrew:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Homebrew formula
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          script: |
+            const version = context.ref.replace('refs/tags/v', '');
+            const tag = context.ref.replace('refs/tags/', '');
+
+            // Get SHA256 for each asset
+            const assets = [
+              { name: `cato-macos-arm64-${tag}.tar.gz`, key: 'macos_arm64' },
+              { name: `cato-macos-x64-${tag}.tar.gz`, key: 'macos_x64' },
+              { name: `cato-linux-x64-${tag}.tar.gz`, key: 'linux_x64' },
+            ];
+
+            const shas = {};
+            for (const asset of assets) {
+              const url = `https://github.com/Harikrishnareddyl/cato/releases/download/${tag}/${asset.name}`;
+              const resp = await fetch(url);
+              const buffer = await resp.arrayBuffer();
+              const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+              const hashArray = Array.from(new Uint8Array(hashBuffer));
+              shas[asset.key] = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            }
+
+            const formula = `class Cato < Formula
+              desc "Portable sandbox for secure command execution"
+              homepage "https://github.com/Harikrishnareddyl/cato"
+              version "${version}"
+              license "MIT"
+
+              on_macos do
+                on_arm do
+                  url "https://github.com/Harikrishnareddyl/cato/releases/download/${tag}/cato-macos-arm64-${tag}.tar.gz"
+                  sha256 "${shas.macos_arm64}"
+                end
+                on_intel do
+                  url "https://github.com/Harikrishnareddyl/cato/releases/download/${tag}/cato-macos-x64-${tag}.tar.gz"
+                  sha256 "${shas.macos_x64}"
+                end
+              end
+
+              on_linux do
+                on_intel do
+                  url "https://github.com/Harikrishnareddyl/cato/releases/download/${tag}/cato-linux-x64-${tag}.tar.gz"
+                  sha256 "${shas.linux_x64}"
+                end
+              end
+
+              def install
+                bin.install "cato"
+              end
+
+              test do
+                assert_match "cato", shell_output("#{bin}/cato --version")
+              end
+            end`;
+
+            // Update the formula in homebrew-cato repo
+            const owner = 'Harikrishnareddyl';
+            const repo = 'homebrew-cato';
+            const path = 'Formula/cato.rb';
+
+            let sha;
+            try {
+              const { data } = await github.rest.repos.getContent({ owner, repo, path });
+              sha = data.sha;
+            } catch (e) { }
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo, path,
+              message: `Update cato to ${version}`,
+              content: Buffer.from(formula).toString('base64'),
+              sha,
+            });
+
+            console.log(`Updated homebrew formula to ${version}`);

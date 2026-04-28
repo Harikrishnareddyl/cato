@@ -1,0 +1,17 @@
+# Build output
+/target/
+/dist/
+**/*.rs.bk
+
+# Cato runtime (local to this machine)
+.cato/
+
+# Test artifacts
+/.cato.toml
+
+# OS
+.DS_Store
+.env
+.superpowers/
+/package.json
+/package-lock.json

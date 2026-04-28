@@ -1,0 +1,28 @@
+{
+  "name": "cato-cli",
+  "version": "0.4.0",
+  "description": "Portable sandbox for secure command execution",
+  "keywords": ["sandbox", "security", "cli", "seatbelt", "isolation"],
+  "author": "Harikrishna Reddy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Harikrishnareddyl/cato"
+  },
+  "homepage": "https://github.com/Harikrishnareddyl/cato",
+  "bin": {
+    "cato": "bin/cato"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
+  "os": ["darwin", "linux", "win32"],
+  "engines": {
+    "node": ">=14"
+  }
+}
