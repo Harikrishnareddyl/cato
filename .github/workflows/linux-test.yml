@@ -20,8 +20,8 @@ jobs:
             target
           key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install bubblewrap and socat
-        run: sudo apt-get install -y bubblewrap socat
+      - name: Install bubblewrap
+        run: sudo apt-get install -y bubblewrap
 
       - name: Build LD_PRELOAD deny library
         run: |
@@ -371,7 +371,6 @@ jobs:
           rm -rf "$TESTDIR"
 
       - name: Test network domain filtering (proxy)
-        timeout-minutes: 2
         run: |
           echo "=== Test: network domain filtering on Linux ==="
           TESTDIR=$(mktemp -d)
@@ -385,19 +384,17 @@ jobs:
           EOF
 
           # Allowed domain should work
-          EXIT=0
-          OUTPUT=$(timeout 30 $GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://example.com 2>/dev/null) || EXIT=$?
-          echo "example.com: output=$OUTPUT exit=$EXIT"
+          OUTPUT=$($GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://example.com 2>/dev/null)
           if [ "$OUTPUT" = "200" ]; then
             echo "PASS: example.com allowed (200)"
           else
-            echo "WARN: example.com returned $OUTPUT (exit $EXIT) — socat bridge may need tuning"
+            echo "FAIL: example.com should return 200 (got: $OUTPUT)"
+            exit 1
           fi
 
           # Blocked domain should fail
           EXIT=0
-          timeout 15 $GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://google.com 2>/dev/null || EXIT=$?
-          echo "google.com: exit=$EXIT"
+          $GITHUB_WORKSPACE/target/release/cato run -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://google.com 2>/dev/null || EXIT=$?
           if [ $EXIT -ne 0 ]; then
             echo "PASS: google.com blocked (exit $EXIT)"
           else

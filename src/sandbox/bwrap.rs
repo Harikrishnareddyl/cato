@@ -27,24 +27,17 @@ pub fn generate_args(config: &ResolvedConfig, proxy_bridge: Option<&ProxyBridge>
     args.push("--unshare-ipc".into());
 
     // Network isolation:
-    // - empty list: --unshare-net (kernel blocks everything)
-    // - specific domains: --unshare-net + socat bridge to proxy
+    // - empty list: --unshare-net (kernel blocks everything, no loopback needed)
+    // - specific domains: proxy env vars filter domains (host network kept)
+    //   Note: processes can bypass proxy vars — this is a known Linux limitation.
+    //   Full kernel enforcement requires slirp4netns (future improvement).
     // - ["*"]: no isolation (unrestricted)
     let network_unrestricted = config.network.iter().any(|d| d == "*");
-    if !network_unrestricted {
-        // Block all outbound at kernel level
+    if config.network.is_empty() {
         args.push("--unshare-net".into());
     }
-
-    // Bind proxy socket into sandbox (if domain filtering active)
-    if let Some(bridge) = proxy_bridge {
-        let sock = &bridge.socket_path;
-        if Path::new(sock).exists() {
-            args.push("--bind".into());
-            args.push(sock.clone());
-            args.push(sock.clone());
-        }
-    }
+    // When domains configured: keep host network for proxy access
+    // When ["*"]: keep host network (unrestricted)
 
     // Die with parent (cleanup on terminal close)
     args.push("--die-with-parent".into());
@@ -312,8 +305,8 @@ mod tests {
 
         let args = generate_args(&config, None);
         assert!(args.contains(&"--unshare-pid".to_string()));
-        // Specific domains = --unshare-net (socat bridge provides proxy access)
-        assert!(args.contains(&"--unshare-net".to_string()));
+        // Specific domains = keep host network for proxy access
+        assert!(!args.contains(&"--unshare-net".to_string()));
         assert!(args.contains(&"--die-with-parent".to_string()));
 
         let chdir_idx = args.iter().position(|a| a == "--chdir").unwrap();
