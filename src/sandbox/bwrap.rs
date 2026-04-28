@@ -221,18 +221,34 @@ fn matches_glob(filename: &str, relative_path: &str, pattern: &str) -> bool {
         // Recursive: **/.ssh/*
         let suffix = &pattern[3..];
         relative_path.contains(suffix) || filename == suffix
-    } else if pattern.starts_with("*.") {
-        // Extension: *.env, *.key, *.pem
-        let ext = &pattern[1..];
-        filename.ends_with(ext)
     } else if pattern.ends_with("/*") {
         // Directory glob: .github/*
         let dir = &pattern[..pattern.len() - 2];
         relative_path.starts_with(dir)
     } else if pattern.contains('*') {
-        // Wildcard: *credentials*
-        let parts: Vec<&str> = pattern.split('*').filter(|s| !s.is_empty()).collect();
-        parts.iter().all(|part| filename.contains(part))
+        // General wildcard matching: *.env, *.env.*, *credentials*, *.key
+        // Split on * and check all parts appear in order in the filename
+        let parts: Vec<&str> = pattern.split('*').collect();
+        let mut pos = 0;
+        let mut first = true;
+        for part in &parts {
+            if part.is_empty() { first = false; continue; }
+            if let Some(found) = filename[pos..].find(part) {
+                // First non-empty part must be at start if pattern doesn't start with *
+                if first && !pattern.starts_with('*') && found != 0 {
+                    return false;
+                }
+                pos += found + part.len();
+            } else {
+                return false;
+            }
+            first = false;
+        }
+        // If pattern doesn't end with *, remaining filename must be consumed
+        if !pattern.ends_with('*') && pos != filename.len() {
+            return false;
+        }
+        true
     } else {
         // Exact filename: id_rsa, .git-credentials
         filename == pattern
