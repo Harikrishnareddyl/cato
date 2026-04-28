@@ -1,6 +1,7 @@
 <p align="center">
   <h1 align="center">Cato</h1>
   <p align="center">Portable sandbox for secure command execution<br/>Kernel-enforced isolation. One config file. Works for humans and AI agents alike.</p>
+  <p align="center"><strong>Research Preview</strong> — macOS only. Feedback welcome.</p>
   <p align="center">
     <a href="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml"><img src="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
     <a href="https://github.com/Harikrishnareddyl/cato/releases/latest"><img src="https://img.shields.io/github/v/release/Harikrishnareddyl/cato?label=release" alt="Release"></a>
@@ -12,6 +13,8 @@
 </p>
 
 ---
+
+> **Research Preview.** This is an early release exploring OS-level sandboxing for development workflows. macOS only (Apple Silicon + Intel). Linux support planned. Expect rough edges — [feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
 
 Drop a `.cato.toml` in your project, run `cato run`, and everything inside is locked down at the OS level. No process can read your secrets, escape the workspace, or reach unauthorized networks — enforced by the macOS kernel, not by cooperation.
 
