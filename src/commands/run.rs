@@ -105,20 +105,29 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
         None
     };
 
-    // Generate Seatbelt profile
-    let profile_content = sandbox::seatbelt::generate(&resolved, &tool_paths);
-    let profile_path = std::env::temp_dir().join(format!("cato-{}.sb", std::process::id()));
-    std::fs::write(&profile_path, &profile_content).unwrap_or_else(|e| {
-        eprintln!("[cato] Failed to write sandbox profile: {}", e);
-        std::process::exit(1);
-    });
+    // Generate platform-specific sandbox profile
+    #[cfg(target_os = "macos")]
+    let profile_path = {
+        let profile_content = sandbox::seatbelt::generate(&resolved, &tool_paths);
+        let path = std::env::temp_dir().join(format!("cato-{}.sb", std::process::id()));
+        std::fs::write(&path, &profile_content).unwrap_or_else(|e| {
+            eprintln!("[cato] Failed to write sandbox profile: {}", e);
+            std::process::exit(1);
+        });
+        if std::env::var("CATO_DEBUG").is_ok() {
+            eprintln!("[cato] Generated Seatbelt profile:");
+            eprintln!("{}", profile_content);
+            eprintln!("[cato] Profile path: {}", path.display());
+        }
+        path
+    };
 
-    // Debug: print profile if CATO_DEBUG is set
-    if std::env::var("CATO_DEBUG").is_ok() {
-        eprintln!("[cato] Generated Seatbelt profile:");
-        eprintln!("{}", profile_content);
-        eprintln!("[cato] Profile path: {}", profile_path.display());
-    }
+    #[cfg(not(target_os = "macos"))]
+    let profile_path = std::env::temp_dir().join(format!("cato-{}.profile", std::process::id()));
+
+    // Suppress unused warning for tool_paths on Linux
+    #[cfg(not(target_os = "macos"))]
+    let _ = &tool_paths;
 
     // Record start time and command for audit
     let start_time = std::time::Instant::now();
