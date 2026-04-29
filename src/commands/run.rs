@@ -178,6 +178,12 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
         }
     }
 
+    if resolved.options.ssh_agent {
+        if std::env::var("SSH_AUTH_SOCK").is_ok() {
+            eprintln!("[cato]   \x1b[33mSSH agent forwarded — processes can use your SSH keys (git push, ssh)\x1b[0m");
+        }
+    }
+
     if command.is_some() {
         eprintln!("[cato] Running command...");
     } else {
@@ -286,15 +292,8 @@ fn log_sandbox_event(
 
     let log_path = crate::audit::log_path();
 
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(json) = serde_json::to_string(&entry) {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
+        if let Ok(mut f) = crate::audit::open_append_private(&log_path) {
             use std::io::Write;
             let _ = writeln!(f, "{}", json);
         }

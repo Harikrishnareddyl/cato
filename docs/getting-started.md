@@ -52,7 +52,7 @@ Secrets are stored on the host in `~/.cato/store.toml`. Inside the sandbox they 
 cato run
 ```
 
-You're now in a kernel-enforced sandbox. Every process inside — your shell, any tool, any AI agent — is restricted.
+You're now in an OS-enforced sandbox. Every process inside — your shell, any tool, any AI agent — is restricted.
 
 ### 5. Work normally
 
@@ -66,7 +66,7 @@ You're now in a kernel-enforced sandbox. Every process inside — your shell, an
 
 ## How It Works
 
-Cato uses macOS `sandbox-exec` (the Seatbelt framework) to create a kernel-enforced sandbox around your shell session.
+Cato uses OS-level sandboxing — macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap — to create an isolated environment around your shell session.
 
 ```
 Host
@@ -77,7 +77,7 @@ Host
   ├── Injects secrets as env vars
   └── Runs: sandbox-exec -f profile.sb /bin/zsh
         │
-        └── Sandbox (kernel-enforced)
+        └── Sandbox (OS-enforced)
               ├── Workspace: read-write
               ├── System dirs: read-only
               ├── Home dir: invisible

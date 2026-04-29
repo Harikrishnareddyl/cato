@@ -13,7 +13,7 @@ allow_write = ["{workspace}", "/tmp"]
 # Deny overrides allow.
 deny_write = ["*.lock", ".github/*", "migrations/*"]
 
-# Read deny: block reads for these patterns. Kernel-enforced.
+# Read deny: block reads for these patterns.
 deny_read = [
     "*.env", "*.env.*",
     "*.pem", "*.key", "*.p12",
@@ -72,7 +72,7 @@ Reads are **allowed by default** within the workspace and system directories. Yo
 deny_read = ["*.env", "*.pem", "*.key", "*credentials*"]
 ```
 
-These are kernel-enforced — no process can bypass them regardless of language or technique.
+On macOS, these are kernel-enforced. On Linux, existing files are kernel-enforced; new files matching these patterns are blocked at the libc level (see [security model](security.md) for details).
 
 Note: the home directory (`~/`) is always invisible regardless of `deny_read`. Only the workspace and system directories are readable.
 
@@ -140,7 +140,7 @@ network = []
 |-------|---------|-------------|
 | `allow_write` | `["{workspace}", "/tmp"]` | Paths where writes are allowed |
 | `deny_write` | `[]` | Patterns blocked from writing within allowed paths |
-| `deny_read` | `[]` | Patterns blocked from reading (kernel-enforced) |
+| `deny_read` | `[]` | Patterns blocked from reading |
 | `network` | `[]` (blocked) | Allowed domains. Empty = no network. `["*"]` = unrestricted |
 | `tools` | `[]` | Required tool binaries |
 | `secrets` | `{}` | Secrets injected as env vars |

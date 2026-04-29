@@ -14,3 +14,4 @@
 ## Design
 
 - [Security Model](security.md)
+- [Known Issues](known-issues.md)

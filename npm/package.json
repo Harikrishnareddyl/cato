@@ -1,6 +1,6 @@
 {
   "name": "cato-cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Portable sandbox for secure command execution",
   "keywords": ["sandbox", "security", "cli", "seatbelt", "isolation"],
   "author": "Harikrishna Reddy",

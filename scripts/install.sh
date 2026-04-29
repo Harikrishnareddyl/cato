@@ -33,13 +33,20 @@ case "$OS" in
             x86_64)        PLATFORM="macos-x64" ;;
             *)             error "Unsupported architecture: $ARCH"; exit 1 ;;
         esac
-        EXT="tar.gz"
+        ;;
+    Linux)
+        case "$ARCH" in
+            x86_64)        PLATFORM="linux-x64" ;;
+            aarch64|arm64) PLATFORM="linux-arm64" ;;
+            *)             error "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
         ;;
     *)
-        error "Unsupported OS: $OS. Cato currently supports macOS only (Linux planned)."
+        error "Unsupported OS: $OS. Cato supports macOS and Linux."
         exit 1
         ;;
 esac
+EXT="tar.gz"
 
 info "Fetching latest release..."
 
@@ -62,6 +69,25 @@ info "Downloading $ASSET_NAME..."
 if ! curl -sSL -o "$TMPDIR/$ASSET_NAME" "$DOWNLOAD_URL"; then
     error "Download failed. URL: $DOWNLOAD_URL"
     exit 1
+fi
+
+# Verify checksum
+CHECKSUM_URL="https://github.com/$REPO/releases/download/${LATEST}/checksums.txt"
+if curl -sSL -o "$TMPDIR/checksums.txt" "$CHECKSUM_URL" 2>/dev/null; then
+    EXPECTED=$(grep "$ASSET_NAME" "$TMPDIR/checksums.txt" | awk '{print $1}')
+    if [[ -n "$EXPECTED" ]]; then
+        ACTUAL=$(shasum -a 256 "$TMPDIR/$ASSET_NAME" | awk '{print $1}')
+        if [[ "$ACTUAL" == "$EXPECTED" ]]; then
+            info "Checksum verified."
+        else
+            error "Checksum mismatch! Expected $EXPECTED, got $ACTUAL"
+            exit 1
+        fi
+    else
+        warn "No matching checksum found, skipping verification."
+    fi
+else
+    warn "Could not download checksums, skipping verification."
 fi
 
 info "Extracting..."
@@ -89,8 +115,13 @@ fi
 echo ""
 info "${GREEN}${BOLD}Cato installed successfully!${RESET}"
 echo ""
-echo -e "  ${DIM}Restart your shell or run:${RESET}  source ~/.zshrc"
+echo -e "  ${DIM}Restart your shell or run:${RESET}  source ~/.bashrc"
 echo -e "  ${DIM}Get started:${RESET}                cd your-project && cato init && cato run"
 echo -e "  ${DIM}Check status:${RESET}               cato status"
 echo -e "  ${DIM}View audit log:${RESET}             cato audit"
+
+if [[ "$OS" == "Linux" ]]; then
+    echo ""
+    echo -e "  ${DIM}Linux dependencies:${RESET}         sudo apt install bubblewrap socat"
+fi
 echo ""
