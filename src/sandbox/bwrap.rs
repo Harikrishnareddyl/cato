@@ -320,9 +320,10 @@ mod tests {
             allow_write: vec!["/home/user/project".into(), "/tmp".into()],
             deny_write: vec![],
             deny_read: vec![],
+            allow_read: vec![],
             network: vec!["github.com".into()],
             tools: vec![],
-            options: SandboxOptions { ssh_agent: false, allow_localhost: true },
+            options: SandboxOptions { ssh_agent: false, allow_localhost: true, log_level: None },
         };
 
         let args = generate_args(&config, None);
@@ -343,9 +344,10 @@ mod tests {
             allow_write: vec!["/home/user/project".into()],
             deny_write: vec![],
             deny_read: vec![],
+            allow_read: vec![],
             network: vec!["*".into()],
             tools: vec![],
-            options: SandboxOptions { ssh_agent: false, allow_localhost: true },
+            options: SandboxOptions { ssh_agent: false, allow_localhost: true, log_level: None },
         };
 
         let args = generate_args(&config, None);
@@ -359,9 +361,10 @@ mod tests {
             allow_write: vec!["/home/user/project".into()],
             deny_write: vec![],
             deny_read: vec![],
+            allow_read: vec![],
             network: vec![],
             tools: vec![],
-            options: SandboxOptions { ssh_agent: false, allow_localhost: true },
+            options: SandboxOptions { ssh_agent: false, allow_localhost: true, log_level: None },
         };
 
         let args = generate_args(&config, None);
