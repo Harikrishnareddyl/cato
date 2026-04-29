@@ -83,7 +83,7 @@ fn run_macos(
     exit_code
 }
 
-/// Linux: bubblewrap + Landlock
+/// Linux: bubblewrap + socat + LD_PRELOAD
 #[cfg(target_os = "linux")]
 fn run_linux(
     resolved: &ResolvedConfig,

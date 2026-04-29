@@ -27,7 +27,7 @@ I aim to respond within 48 hours and release a fix within 7 days for critical is
 
 ## Security Design
 
-- **Kernel-enforced** — Uses macOS Seatbelt (`sandbox-exec`) with a deny-default profile. Restrictions enforced by the kernel, not by cooperation.
+- **OS-level enforcement** — macOS: Seatbelt (`sandbox-exec`) with deny-default profile. Linux: bubblewrap (mount/network namespaces) + LD_PRELOAD for new file patterns. See [security model](docs/security.md) for per-feature enforcement details.
 - **Zero unsafe code** — The entire codebase uses safe Rust
 - **Minimal dependencies** — Direct dependencies: serde, clap, toml, chrono, dirs, ctrlc, serde_json
 - **Deny-default model** — Everything blocked unless explicitly allowed. Home directory invisible, network blocked unless domains listed.

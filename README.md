@@ -24,7 +24,7 @@ Beyond agents: build scripts, npm packages, downloaded code — anything you run
 
 ## What Cato does
 
-One config file. Any process. Kernel-enforced boundaries.
+One config file. Any process. OS-level boundaries.
 
 ```bash
 cd my-project
@@ -149,7 +149,7 @@ allow_write = ["{workspace}", "/tmp"]
 # Write deny: block writes to these patterns even within allow_write.
 deny_write = ["*.lock", ".github/*"]
 
-# Read deny: block reads for these patterns. Kernel-enforced.
+# Read deny: block reads for these patterns.
 deny_read = [
     "*.env", "*.env.*",
     "*.pem", "*.key", "*.p12",
@@ -180,7 +180,7 @@ allow_localhost = true
 |-------|-------------|
 | `allow_write` | Paths where writes are allowed. Everything else is read-only or invisible. |
 | `deny_write` | Patterns blocked from writing even within `allow_write` paths. Deny overrides allow. |
-| `deny_read` | File patterns blocked from reading — kernel-enforced, can't be bypassed. |
+| `deny_read` | File patterns blocked from reading. Kernel-enforced on macOS. Kernel for existing files + libc-level for new files on Linux. |
 | `network` | Allowed domains. Empty = blocked. `["*"]` = unrestricted. |
 | `tools` | Required tool binaries. |
 | `secrets` | Injected as env vars. Never exist as files inside. |
@@ -199,7 +199,7 @@ flowchart TD
     E --> G[Inject secrets as env vars]
     F --> G
     G --> H[Enter sandbox-exec\nwith shell]
-    H --> I[Sandbox active\nkernel-enforced]
+    H --> I[Sandbox active\nOS-enforced]
     I --> J[On exit: cleanup + audit log]
 
     style I fill:#2d6,stroke:#183,color:#fff
@@ -212,7 +212,7 @@ Uses macOS Seatbelt (`sandbox-exec`) — the same kernel framework that sandboxe
 
 ```mermaid
 flowchart LR
-    subgraph Sandbox [Sandbox - kernel enforced]
+    subgraph Sandbox [Sandbox - OS enforced]
         P[Process]
     end
 
@@ -235,13 +235,15 @@ When domains are configured, the kernel blocks all outbound except localhost. A 
 
 ## What's enforced
 
-| Layer | Default | Mechanism |
-|-------|---------|-----------|
-| Writes | Denied everywhere | `allow_write` opens paths, `deny_write` blocks within |
-| Reads | Allowed (workspace + system) | `deny_read` blocks patterns — kernel-enforced |
-| Network | Denied (no outbound) | `network` opens domains — kernel + proxy enforced |
-| Home directory | Invisible | Always — can't be overridden |
-| Config | Write-protected | `.cato.toml` can't be modified from inside |
+| Layer | Default | macOS | Linux |
+|-------|---------|-------|-------|
+| Writes | Denied everywhere | Kernel (Seatbelt) | Kernel (mount namespace) |
+| Reads | Allowed (workspace + system) | Kernel (Seatbelt) | Kernel for existing files, libc-level for new files* |
+| Network | Denied (no outbound) | Kernel + proxy | Kernel (`--unshare-net`) + proxy |
+| Home directory | Invisible | Kernel | Kernel (tmpfs) |
+| Config | Write-protected | Kernel | Kernel (ro-bind) |
+
+*On Linux, `deny_read` for files created during a session is enforced via LD_PRELOAD (catches Python, Node, shell, most tools). Go binaries and raw syscalls bypass it. See [security model](docs/security.md) for details.
 
 ## CLI
 
@@ -267,7 +269,7 @@ graph TB
         Proxy["Network proxy\n(if domains configured)"]
     end
 
-    subgraph SB ["Sandbox (kernel-enforced)"]
+    subgraph SB ["Sandbox (OS-enforced)"]
         Shell["Shell / Agent / Script"]
         WS["Workspace\nread-write ✓"]
         Tmp["/tmp\nread-write ✓"]

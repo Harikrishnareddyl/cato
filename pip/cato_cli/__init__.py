@@ -1,2 +1,2 @@
-"""Cato — Universal AI agent safety layer."""
-__version__ = "0.2.1"
+"""Cato — Portable sandbox for secure command execution."""
+__version__ = "0.5.0"

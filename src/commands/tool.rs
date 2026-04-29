@@ -29,11 +29,8 @@ fn default_store() -> toml::Value {
 
 fn save_store(store: &toml::Value) {
     let path = store_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let content = toml::to_string_pretty(store).unwrap_or_default();
-    std::fs::write(&path, content).unwrap_or_else(|e| {
+    crate::audit::write_private(&path, &content).unwrap_or_else(|e| {
         eprintln!("[cato] Failed to save store: {}", e);
     });
 }

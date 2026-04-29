@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { execSync } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
@@ -15,16 +16,16 @@ function getPlatform() {
   const arch = process.arch;
 
   const map = {
-    "darwin-arm64": { asset: "cato-macos-arm64", ext: "tar.gz" },
-    "darwin-x64": { asset: "cato-macos-x64", ext: "tar.gz" },
-    "linux-x64": { asset: "cato-linux-x64", ext: "tar.gz" },
-    "win32-x64": { asset: "cato-windows-x64", ext: "zip" },
+    "darwin-arm64": "cato-macos-arm64",
+    "darwin-x64": "cato-macos-x64",
+    "linux-x64": "cato-linux-x64",
+    "linux-arm64": "cato-linux-arm64",
   };
 
   const key = `${os}-${arch}`;
   if (!map[key]) {
-    console.error(`Unsupported platform: ${key}`);
-    console.error("Supported: darwin-arm64, darwin-x64, linux-x64, win32-x64");
+    console.error(`[cato] Unsupported platform: ${key}`);
+    console.error("[cato] Supported: darwin-arm64, darwin-x64, linux-x64, linux-arm64");
     process.exit(1);
   }
   return map[key];
@@ -39,7 +40,7 @@ function download(url, dest) {
           return;
         }
         if (res.statusCode !== 200) {
-          reject(new Error(`Download failed: HTTP ${res.statusCode} for ${url}`));
+          reject(new Error(`HTTP ${res.statusCode} for ${url}`));
           return;
         }
         const file = createWriteStream(dest);
@@ -51,10 +52,38 @@ function download(url, dest) {
   });
 }
 
+function downloadText(url) {
+  return new Promise((resolve, reject) => {
+    const follow = (url) => {
+      https.get(url, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          follow(res.headers.location);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => resolve(data));
+      }).on("error", reject);
+    };
+    follow(url);
+  });
+}
+
+function sha256File(filepath) {
+  const hash = crypto.createHash("sha256");
+  const data = fs.readFileSync(filepath);
+  hash.update(data);
+  return hash.digest("hex");
+}
+
 async function main() {
-  const { asset, ext } = getPlatform();
+  const asset = getPlatform();
   const tag = `v${VERSION}`;
-  const filename = `${asset}-${tag}.${ext}`;
+  const filename = `${asset}-${tag}.tar.gz`;
   const url = `https://github.com/${REPO}/releases/download/${tag}/${filename}`;
 
   console.log(`[cato] Downloading ${filename}...`);
@@ -67,36 +96,43 @@ async function main() {
   } catch (e) {
     console.error(`[cato] Download failed: ${e.message}`);
     console.error(`[cato] URL: ${url}`);
-    console.error(`[cato] You can download manually from https://github.com/${REPO}/releases`);
+    console.error(`[cato] Download manually: https://github.com/${REPO}/releases`);
     process.exit(1);
   }
 
-  console.log("[cato] Extracting...");
-
-  const binName = process.platform === "win32" ? "cato.exe" : "cato";
-
-  if (ext === "tar.gz") {
-    execSync(`tar xzf "${tmpFile}" -C "${BIN_DIR}" --strip-components=1`, { stdio: "pipe" });
-  } else {
-    // Windows zip
-    execSync(`powershell -command "Expand-Archive -Path '${tmpFile}' -DestinationPath '${BIN_DIR}' -Force"`, { stdio: "pipe" });
-    // Move from subdirectory
-    const subdir = fs.readdirSync(BIN_DIR).find(f => f.startsWith("cato-"));
-    if (subdir) {
-      const src = path.join(BIN_DIR, subdir, binName);
-      const dst = path.join(BIN_DIR, binName);
-      if (fs.existsSync(src)) fs.renameSync(src, dst);
-      fs.rmSync(path.join(BIN_DIR, subdir), { recursive: true, force: true });
+  // Verify checksum
+  const checksumUrl = `https://github.com/${REPO}/releases/download/${tag}/checksums.txt`;
+  try {
+    const checksumText = await downloadText(checksumUrl);
+    const lines = checksumText.trim().split("\n");
+    const match = lines.find((l) => l.includes(filename));
+    if (match) {
+      const expectedSha = match.split(/\s+/)[0];
+      const actualSha = sha256File(tmpFile);
+      if (actualSha === expectedSha) {
+        console.log("[cato] Checksum verified.");
+      } else {
+        console.error(`[cato] ERROR: Checksum mismatch!`);
+        console.error(`[cato]   Expected: ${expectedSha}`);
+        console.error(`[cato]   Got:      ${actualSha}`);
+        fs.unlinkSync(tmpFile);
+        process.exit(1);
+      }
+    } else {
+      console.log("[cato] Warning: no matching checksum found, skipping verification.");
     }
+  } catch (e) {
+    console.log("[cato] Warning: could not verify checksum:", e.message);
   }
+
+  console.log("[cato] Extracting...");
+  execSync(`tar xzf "${tmpFile}" -C "${BIN_DIR}" --strip-components=1`, { stdio: "pipe" });
 
   // Clean up archive
   fs.unlinkSync(tmpFile);
 
-  // Set executable permission (Unix)
-  if (process.platform !== "win32") {
-    fs.chmodSync(path.join(BIN_DIR, "cato"), 0o755);
-  }
+  // Set executable permission
+  fs.chmodSync(path.join(BIN_DIR, "cato"), 0o755);
 
   console.log("[cato] Installed successfully!");
   console.log("[cato] Run: cato init");

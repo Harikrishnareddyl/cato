@@ -24,11 +24,8 @@ pub fn run(minimal: bool, strict: bool, force: bool) {
 
     std::fs::write(&config_path, &content).expect("Failed to write .cato.toml");
 
-    // Ensure global cato dir exists
-    let global_dir = dirs::home_dir()
-        .unwrap_or_else(|| ".".into())
-        .join(".cato");
-    let _ = std::fs::create_dir_all(&global_dir);
+    // Ensure global cato dir exists with restricted permissions
+    crate::audit::ensure_cato_dir();
 
     // Output
     println!("[cato] Created .cato.toml ({} protection)", level);
@@ -213,7 +210,7 @@ fn generate_config(level: &str, detected: &ProjectDetection) -> String {
 
     // Options
     lines.push("[sandbox.options]".to_string());
-    lines.push("ssh_agent = true".to_string());
+    lines.push("# ssh_agent = true  # enable if you need git push via SSH (forwards your keys)".to_string());
     lines.push("allow_localhost = true".to_string());
 
     // Strict additions

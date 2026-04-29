@@ -8,6 +8,3 @@ pub mod seatbelt;
 
 #[cfg(target_os = "linux")]
 pub mod bwrap;
-
-#[cfg(target_os = "linux")]
-pub mod landlock;

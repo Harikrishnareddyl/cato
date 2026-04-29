@@ -20,7 +20,7 @@ All notable changes to Cato are documented here.
 
 ### Requirements
 - macOS: 12+ (Monterey)
-- Linux: kernel 5.13+, bubblewrap, socat (Ubuntu 22.04+, Debian 12+, Fedora 36+)
+- Linux: bubblewrap, socat, glibc (Ubuntu 22.04+, Debian 12+, Fedora 36+)
 
 ## [0.4.0] — 2026-04-28
 
