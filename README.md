@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">Cato</h1>
   <p align="center">Agent-agnostic sandbox. One config file, any process, anywhere.</p>
-  <p align="center"><strong>Research Preview</strong> — macOS only. Feedback welcome.</p>
+  <p align="center"><strong>Research Preview</strong> — macOS + Linux. Feedback welcome.</p>
   <p align="center">
     <a href="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml"><img src="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
     <a href="https://github.com/Harikrishnareddyl/cato/releases/latest"><img src="https://img.shields.io/github/v/release/Harikrishnareddyl/cato?label=release" alt="Release"></a>
@@ -14,7 +14,7 @@
 
 ---
 
-> **Research Preview.** Early release exploring portable, provider-independent sandboxing for development workflows. macOS only (Apple Silicon + Intel). Linux planned. [Feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
+> **Research Preview.** Early release exploring portable, provider-independent sandboxing for development workflows. macOS (Apple Silicon + Intel) and Linux (Ubuntu 22.04+, Debian 12+, Fedora 36+). [Feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
 
 ## The problem
 
@@ -300,12 +300,12 @@ graph TB
 
 ## Platform support
 
-| Platform | Status |
-|----------|--------|
-| macOS (Apple Silicon) | Supported |
-| macOS (Intel) | Supported |
-| Linux | Planned |
-| Windows | Not supported |
+| Platform | Status | Requirements |
+|----------|--------|-------------|
+| macOS (Apple Silicon) | Supported | macOS 12+ |
+| macOS (Intel) | Supported | macOS 12+ |
+| Linux (x64, ARM64) | Supported | Ubuntu 22.04+, Debian 12+, Fedora 36+. Requires `bubblewrap` and `socat`. |
+| Windows | Not supported | |
 
 ## Building from source
 

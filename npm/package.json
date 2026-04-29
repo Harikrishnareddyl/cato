@@ -21,7 +21,7 @@
     "scripts/",
     "README.md"
   ],
-  "os": ["darwin", "linux", "win32"],
+  "os": ["darwin", "linux"],
   "engines": {
     "node": ">=14"
   }

@@ -2,6 +2,26 @@
 
 All notable changes to Cato are documented here.
 
+## [0.5.0] — 2026-04-29
+
+### Added
+- **Linux support** — bubblewrap (bwrap) for filesystem/process isolation
+- Kernel-enforced network blocking on Linux (`--unshare-net`)
+- Network domain filtering on Linux via socat Unix socket bridge (same architecture as Anthropic's sandbox-runtime)
+- LD_PRELOAD library (`libcato_deny.so`) for deny_read/deny_write pattern enforcement on new files
+- `deny_write` field — block writes to specific patterns within `allow_write` paths
+- `allow_write` replaces `writable` (old name still works via alias)
+- Network deny-by-default: empty `network = []` blocks all outbound, `["*"]` for unrestricted
+- Platform-specific CI test suites (macOS Seatbelt tests + Linux bwrap tests)
+
+### Fixed
+- deny_read patterns now also block overwrites on macOS (prevents wiping host secrets)
+- deny_read patterns scoped to workspace (system files like `/etc/ssl/cert.pem` no longer caught by `*.pem`)
+
+### Requirements
+- macOS: 12+ (Monterey)
+- Linux: kernel 5.13+, bubblewrap, socat (Ubuntu 22.04+, Debian 12+, Fedora 36+)
+
 ## [0.4.0] — 2026-04-28
 
 ### Added
