@@ -9,6 +9,9 @@
 # Test artifacts
 /.cato.toml
 
+# Recording artifacts
+*.cast
+
 # OS
 .DS_Store
 .env

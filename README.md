@@ -14,6 +14,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/demo.gif" alt="Cato demo" width="700">
+</p>
+
 > **Research Preview.** Early release exploring portable, provider-independent sandboxing for development workflows. macOS (Apple Silicon + Intel) and Linux (Ubuntu 22.04+, Debian 12+, Fedora 36+). [Feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
 
 ## The problem
