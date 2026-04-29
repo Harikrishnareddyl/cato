@@ -25,9 +25,6 @@ jobs:
             target: aarch64-unknown-linux-gnu
             asset: cato-linux-arm64
             cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset: cato-windows-x64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -69,17 +66,6 @@ jobs:
           chmod 755 "$DIST/cato"
           tar czf "${DIST}.tar.gz" "$DIST"
           echo "ASSET=${DIST}.tar.gz" >> $GITHUB_ENV
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}"
-          $dist = "${{ matrix.asset }}-${version}"
-          New-Item -ItemType Directory -Path $dist -Force
-          Copy-Item "target/${{ matrix.target }}/release/cato.exe" "$dist/"
-          Compress-Archive -Path "$dist/*" -DestinationPath "${dist}.zip"
-          "ASSET=${dist}.zip" | Out-File -Append -FilePath $env:GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
