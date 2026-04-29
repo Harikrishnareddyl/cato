@@ -23,7 +23,7 @@ Uses bubblewrap (bwrap) for namespace isolation + socat bridge for network. Enfo
 | Network domain filtering | Kernel (--unshare-net) + socat bridge + proxy | No |
 | .cato.toml protection | Kernel (ro-bind mount) | No |
 
-**The LD_PRELOAD gap on Linux:** When an agent creates a NEW file matching a deny_read pattern during a session (e.g., creates `new.env`), only the LD_PRELOAD interceptor blocks reading it. This catches Python, Node, Ruby, shell, and most tools that use libc — but NOT Go binaries (statically linked by default), raw syscalls, or io_uring. The README and this document only call something "kernel-enforced" when it actually is.
+**The LD_PRELOAD gap on Linux:** When a process creates a NEW file matching a deny_read pattern during a session (e.g., creates `new.env`), only the LD_PRELOAD interceptor blocks reading it. This catches Python, Node, Ruby, shell, and most tools that use libc — but NOT Go binaries (statically linked by default), raw syscalls, or io_uring. The README and this document only call something "kernel-enforced" when it actually is.
 
 For existing files, there is no gap — bwrap mount namespaces provide real kernel enforcement on both platforms.
 
@@ -76,7 +76,7 @@ PermissionError: [Errno 1] Operation not permitted: '.env'
 
 ### deny_read implies write protection
 
-Files matching `deny_read` patterns are also protected from overwrites. On macOS via `(deny file-write-data ...)`. On Linux via `--ro-bind` for existing files. This prevents an agent from wiping host secrets even if it can't read them.
+Files matching `deny_read` patterns are also protected from overwrites. On macOS via `(deny file-write-data ...)`. On Linux via `--ro-bind` for existing files. This prevents any process from wiping host secrets even if it can't read them.
 
 ### Home directory
 

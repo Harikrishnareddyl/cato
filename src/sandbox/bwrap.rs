@@ -112,6 +112,23 @@ pub fn generate_args(config: &ResolvedConfig, proxy_bridge: Option<&ProxyBridge>
     }
 
     // ═══════════════════════════════════════════════════════
+    // allow_read — host directories mounted into sandbox
+    // Read-write so tools can update their own state
+    // ═══════════════════════════════════════════════════════
+    for path in &config.allow_read {
+        let p = Path::new(path);
+        if p.exists() {
+            if p.is_dir() {
+                args.push("--bind".into());
+            } else {
+                args.push("--bind".into()); // files also use --bind for read-write
+            }
+            args.push(path.clone());
+            args.push(path.clone());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
     // SSH agent socket (if enabled)
     // ═══════════════════════════════════════════════════════
     if config.options.ssh_agent {
@@ -135,7 +152,7 @@ pub fn generate_args(config: &ResolvedConfig, proxy_bridge: Option<&ProxyBridge>
             args.push("/dev/null".into());
             args.push(file_path.clone());
         }
-        if std::env::var("CATO_DEBUG").is_ok() && !matches.is_empty() {
+        if crate::log::level() >= crate::log::LogLevel::Debug && !matches.is_empty() {
             eprintln!("[cato] deny_read: hiding {} files via /dev/null bind", matches.len());
             for m in &matches {
                 eprintln!("[cato]   {}", m);
@@ -155,7 +172,7 @@ pub fn generate_args(config: &ResolvedConfig, proxy_bridge: Option<&ProxyBridge>
             args.push(file_path.clone());
             args.push(file_path.clone());
         }
-        if std::env::var("CATO_DEBUG").is_ok() {
+        if crate::log::level() >= crate::log::LogLevel::Debug {
             eprintln!("[cato] deny_write: {} patterns matched {} files", config.deny_write.len(), matches.len());
             for m in &matches {
                 eprintln!("[cato]   ro-bind: {}", m);

@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Cato</h1>
-  <p align="center">Agent-agnostic sandbox. One config file, any process, anywhere.</p>
+  <p align="center">Portable sandbox for AI agents and untrusted commands.<br/>One config, any process, anywhere.</p>
   <p align="center"><strong>Research Preview</strong> — macOS + Linux. Feedback welcome.</p>
   <p align="center">
     <a href="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml"><img src="https://github.com/Harikrishnareddyl/cato/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -18,107 +18,86 @@
   <img src="assets/demo.gif" alt="Cato demo" width="700">
 </p>
 
-> **Research Preview.** Early release exploring portable, provider-independent sandboxing for development workflows. macOS (Apple Silicon + Intel) and Linux (Ubuntu 22.04+, Debian 12+, Fedora 36+). [Feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
+> **Research Preview.** macOS (Apple Silicon + Intel) and Linux (Ubuntu 22.04+, Debian 12+, Fedora 36+). [Feedback and issues](https://github.com/Harikrishnareddyl/cato/issues) appreciated.
 
 ## The problem
 
-AI agents are becoming the primary way developers write code. Each agent provider has its own sandbox approach — different configs, different formats, different tools. Switch agents, redo your security setup. Use multiple agents, manage multiple boundary systems.
-
-Beyond agents: build scripts, npm packages, downloaded code — anything you run has your full permissions. You either set up Docker (heavy) or trust everything (risky).
+AI agents run with your full permissions — every file, every secret, every network endpoint. So do build scripts, npm packages, and downloaded code. You either set up Docker (heavy) or trust everything (risky).
 
 ## What Cato does
 
-One config file. Any process. OS-level boundaries.
+A `.cato.toml` in your repo defines what any process can access — which files are readable, which are writable, which network domains are reachable. Cato enforces it as an OS-level sandbox. No containers, no daemon, under 2 MB.
+
+```toml
+# .cato.toml — commit to git, same rules everywhere
+[sandbox]
+allow_write = ["{workspace}", "/tmp"]
+deny_read = ["*.env", "*.key", "*.pem"]
+network = ["github.com", "registry.npmjs.org"]
+```
 
 ```bash
-cd my-project
 cato run
 ```
 
 ```
-🔒 $ cat .env              → Operation not permitted
-🔒 $ curl https://evil.com → blocked
-🔒 $ ls ~/Documents        → invisible
-🔒 $ echo $API_KEY         → available (injected)
-🔒 $ node app.js           → works fine
+🔒 my-project $ cat .env              → Operation not permitted
+🔒 my-project $ curl https://evil.com → blocked
+🔒 my-project $ ls ~/Documents        → invisible
+🔒 my-project $ echo $API_KEY         → available (injected as env var)
+🔒 my-project $ node app.js           → works fine
 ```
 
-The `.cato.toml` defines what's allowed. The OS kernel enforces it. Doesn't matter what's inside — Claude, Codex, Cursor, a bash script, a human. Same rules, same enforcement.
+## Why Cato
 
-## Why this approach
+**Works with any agent, any tool.** Same `.cato.toml` for Claude, Codex, Cursor, or a shell script. Switch agents without reconfiguring security. The sandbox doesn't care what's inside.
 
-Today, session-level sandboxing exists — but it's fragmented. Each tool has its own:
+**Granular file-level control.** Not just "this directory is mounted" — you define which file patterns are blocked from reading (`*.env`, `*.key`, `*credentials*`) and which are blocked from writing (`*.lock`, `.github/*`). Enforced at the OS level.
 
-- Codex has `.codex/config.toml` (works only with Codex)
-- Claude Code has `.claude/settings.json` (works only with Claude)
-- Cloud sandboxes (E2B, Modal, Daytona) require their infrastructure
-- SandVault requires macOS user account setup
+**Network domain filtering.** Not "network on or off" — you list exactly which domains are reachable. Everything else is blocked. `npm install` works, `curl evil.com` doesn't.
 
-If you use multiple agents, or switch between them, or want your rules to work in CI and containers too — you're managing multiple systems.
+**Portable.** The `.cato.toml` lives in your repo, checked into git. Every developer, every CI runner, every container gets the same boundaries. No per-machine setup.
 
-Cato's approach: **one config that works with anything, anywhere.**
-
-| | Provider-specific configs | Cloud sandboxes | Cato |
-|---|---|---|---|
-| Works with any agent | No | Partially | Yes |
-| Works locally | Yes | No (cloud) | Yes |
-| Works in containers | N/A | N/A (is the container) | Yes |
-| Works in CI | Varies | Requires setup | Yes |
-| Config travels with repo | Yes (per-provider) | No | Yes |
-| No platform dependency | No (tied to one agent) | No (their infra) | Yes |
+**Zero overhead.** Single binary, under 2 MB. Sub-second startup. No daemon, no runtime, no container images, no root access. Works directly on your machine.
 
 ## Use cases
 
-**Run any AI agent with boundaries:**
+**Run AI agents with real boundaries:**
 ```bash
-cato run -- claude "refactor the auth system"
-cato run -- codex "add tests for the API"
-cato run -- node my-custom-agent.js
-# Same .cato.toml, same rules, regardless of agent
+cato run -- claude -p "refactor the auth module"
+# Agent can read and write your code, but can't read .env,
+# can't access ~/Documents, can't reach unauthorized APIs
+# Same rules whether it's Claude, Codex, Cursor, or a custom agent
 ```
+Setup required for agents — see [use case guides](docs/use-cases/).
 
-**Protect against malicious dependencies:**
+**Protect secrets from build scripts and dependencies:**
 ```bash
 cato run -- npm install
-# Postinstall scripts can't read ~/.ssh or exfiltrate data
+# Postinstall scripts run normally but can't read .env, ~/.ssh, or any secret files
+```
+
+**Same security rules everywhere — local, CI, containers:**
+```bash
+# .cato.toml is in git — every environment gets the same rules
+git clone repo && cd repo && cato run -- npm test    # local
+cato run -- npm test                                  # CI
+# Inside Docker: CMD ["cato", "run", "--", "node", "app.js"]
 ```
 
 **Isolate secrets between projects:**
 ```bash
-cd project-a && cato run    # gets only project-a's secrets
-cd project-b && cato run    # gets only project-b's secrets
+cd project-a && cato run    # only project-a's API keys available
+cd project-b && cato run    # only project-b's API keys available
 ```
 
-**Restrict network access:**
+**Add granular security inside containers:**
 ```bash
-# .cato.toml: network = ["registry.npmjs.org", "github.com"]
-cato run -- npm test
-# Nothing reaches production APIs or unknown servers
-```
-
-**Portable team rules:**
-```bash
-# .cato.toml is in git — new team member gets same boundaries instantly
-git clone repo && cd repo && cato run
-```
-
-## Works anywhere
-
-Cato is a layer, not infrastructure. Add it to any environment:
-
-```bash
-# Locally
-cato run -- claude "fix the tests"
-
-# In CI
-- run: cato init --minimal && cato run -- npm test
-
-# Inside any container (Docker, E2B, Modal, etc.)
+# Containers isolate the environment. Cato adds per-file, per-domain rules inside it.
+# Docker can't say "block *.env but allow *.js" — Cato can.
 RUN npm install -g cato-cli
-CMD ["cato", "run", "--", "node", "agent.js"]
+CMD ["cato", "run", "--", "node", "app.js"]
 ```
-
-Same `.cato.toml`, same enforcement, regardless of where it runs.
 
 ## Install
 
@@ -137,9 +116,27 @@ Pre-built binaries on [Releases](https://github.com/Harikrishnareddyl/cato/relea
 cd my-project
 cato init                        # creates .cato.toml
 cato tool add node git python3   # register tools (once per machine)
-cato secret put API_KEY          # store secrets (once per machine)
 cato run                         # enter sandbox
 ```
+
+That's it for simple tools. Everything inside the sandbox follows the rules in `.cato.toml`.
+
+### Tools that need authentication or network
+
+Some tools (AI agents, CLIs with API access) need auth configs and network access to work inside the sandbox. For these, additional setup is needed:
+
+```bash
+cato tool add claude                    # auto-detects config dirs (~/.claude, etc.)
+cato secret put CLAUDE_CODE_OAUTH_TOKEN # store auth token
+# Edit .cato.toml → add required network domains
+cato run -- claude "review this code"   # works
+```
+
+Each tool has different requirements. See [docs/tools/](docs/tools/) for step-by-step guides:
+- [Claude Code](docs/tools/claude-code.md)
+- [GitHub CLI](docs/tools/github-cli.md)
+
+The pattern is always the same: register the tool, mount its config, add its auth, configure its network domains.
 
 ## Configuration
 
@@ -161,11 +158,18 @@ deny_read = [
     "*credentials*",
 ]
 
+# Host paths: mount specific host directories into the sandbox.
+# Used for tool configs that need auth (e.g., ~/.claude for OAuth tokens).
+# Mounted read-write so tools can update their own state.
+allow_read = [
+    "~/.claude",
+    "~/.config/gh",
+]
+
 # Network: deny by default. Only listed domains reachable.
 # Empty = no outbound. ["*"] = unrestricted.
 network = [
     "github.com",
-    "api.anthropic.com",
     "registry.npmjs.org",
 ]
 
@@ -176,8 +180,9 @@ API_KEY = {}
 DATABASE_URL = { default = "postgres://localhost/mydb" }
 
 [sandbox.options]
-ssh_agent = true
+# ssh_agent = true  # enable if you need git push via SSH (forwards your keys)
 allow_localhost = true
+# log_level = "normal"  # quiet(0) | normal(1) | verbose(2) | debug(3)
 ```
 
 | Field | What it does |
@@ -185,11 +190,13 @@ allow_localhost = true
 | `allow_write` | Paths where writes are allowed. Everything else is read-only or invisible. |
 | `deny_write` | Patterns blocked from writing even within `allow_write` paths. Deny overrides allow. |
 | `deny_read` | File patterns blocked from reading. Kernel-enforced on macOS. Kernel for existing files + libc-level for new files on Linux. |
+| `allow_read` | Host directories mounted into the sandbox. For tool configs that need auth. |
 | `network` | Allowed domains. Empty = blocked. `["*"]` = unrestricted. |
 | `tools` | Required tool binaries. |
 | `secrets` | Injected as env vars. Never exist as files inside. |
-| `ssh_agent` | Forward SSH agent for git push. |
+| `ssh_agent` | Forward SSH agent for git push (disabled by default — forwards your keys). |
 | `allow_localhost` | Allow localhost connections (dev servers, databases). |
+| `log_level` | `quiet`(0), `normal`(1), `verbose`(2), `debug`(3). Default: `normal`. Override: `CATO_LOG=verbose`. |
 
 ## How it works
 
@@ -274,7 +281,7 @@ graph TB
     end
 
     subgraph SB ["Sandbox (OS-enforced)"]
-        Shell["Shell / Agent / Script"]
+        Shell["Shell / Tool / Script"]
         WS["Workspace\nread-write ✓"]
         Tmp["/tmp\nread-write ✓"]
         Sys["System dirs\nread-only ✓"]

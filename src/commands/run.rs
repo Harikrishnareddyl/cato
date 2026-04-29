@@ -1,4 +1,6 @@
 use crate::sandbox;
+use crate::log::LogLevel;
+use crate::cato_log;
 
 pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
     // Check if already in a sandbox
@@ -29,10 +31,13 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
         }
     };
 
+    // Initialize log level from config + env var
+    crate::log::init(sandbox_config.options.log_level.as_deref());
+
     // Determine workspace (use ephemeral copy if requested)
     let workspace = if ephemeral {
         let tmp = std::env::temp_dir().join(format!("cato-eph-{}", std::process::id()));
-        eprintln!("[cato] Ephemeral mode: copying workspace to {}", tmp.display());
+        cato_log!(LogLevel::Normal, "[cato] Ephemeral mode: copying workspace to {}", tmp.display());
         copy_dir_recursive(&cwd, &tmp).unwrap_or_else(|e| {
             eprintln!("[cato] Failed to copy workspace: {}", e);
             std::process::exit(1);
@@ -114,11 +119,9 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
             eprintln!("[cato] Failed to write sandbox profile: {}", e);
             std::process::exit(1);
         });
-        if std::env::var("CATO_DEBUG").is_ok() {
-            eprintln!("[cato] Generated Seatbelt profile:");
-            eprintln!("{}", profile_content);
-            eprintln!("[cato] Profile path: {}", path.display());
-        }
+        cato_log!(LogLevel::Debug, "[cato] Generated Seatbelt profile:");
+        cato_log!(LogLevel::Debug, "{}", profile_content);
+        cato_log!(LogLevel::Debug, "[cato] Profile path: {}", path.display());
         path
     };
 
@@ -149,45 +152,56 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
     // Log sandbox start
     log_sandbox_event("sandbox_start", &resolved, Some(&cmd_label), None, None);
 
-    // Print summary
-    eprintln!("[cato] Sandbox active");
-    eprintln!("[cato]   Workspace: {}", resolved.workspace);
+    // Print summary (Normal level)
+    cato_log!(LogLevel::Normal, "[cato] Sandbox active");
+    cato_log!(LogLevel::Normal, "[cato]   Workspace: {}", resolved.workspace);
     if !resolved.deny_read.is_empty() {
-        eprintln!("[cato]   Read deny: {} patterns", resolved.deny_read.len());
+        cato_log!(LogLevel::Normal, "[cato]   Read deny: {} patterns", resolved.deny_read.len());
     }
     if !resolved.deny_write.is_empty() {
-        eprintln!("[cato]   Write deny: {} patterns", resolved.deny_write.len());
+        cato_log!(LogLevel::Normal, "[cato]   Write deny: {} patterns", resolved.deny_write.len());
     }
     if resolved.network.iter().any(|d| d == "*") {
-        eprintln!("[cato]   Network:   unrestricted");
+        cato_log!(LogLevel::Normal, "[cato]   Network:   unrestricted");
     } else if !resolved.network.is_empty() {
         let proxy_info = _proxy.as_ref()
             .map(|p| format!(" (proxy :{})", p.port()))
             .unwrap_or_default();
-        eprintln!("[cato]   Network:   {} allowed, deny all others{}",
+        cato_log!(LogLevel::Normal, "[cato]   Network:   {} allowed, deny all others{}",
             resolved.network.len(), proxy_info);
     } else {
-        eprintln!("[cato]   Network:   blocked (no domains configured)");
+        cato_log!(LogLevel::Normal, "[cato]   Network:   blocked (no domains configured)");
     }
     if !env_vars.is_empty() {
         let secret_count = env_vars.iter()
             .filter(|(k, _)| !k.contains("proxy") && !k.contains("PROXY"))
             .count();
         if secret_count > 0 {
-            eprintln!("[cato]   Secrets:   {} injected", secret_count);
+            cato_log!(LogLevel::Normal, "[cato]   Secrets:   {} injected", secret_count);
         }
     }
 
     if resolved.options.ssh_agent {
         if std::env::var("SSH_AUTH_SOCK").is_ok() {
-            eprintln!("[cato]   \x1b[33mSSH agent forwarded — processes can use your SSH keys (git push, ssh)\x1b[0m");
+            cato_log!(LogLevel::Normal, "[cato]   \x1b[33mSSH agent forwarded — processes can use your SSH keys\x1b[0m");
+        }
+    }
+
+    // Pre-flight checks (Verbose level)
+    if let Some(ref cmd_args) = command {
+        if let Some(cmd_name) = cmd_args.first() {
+            let base = std::path::Path::new(cmd_name)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| cmd_name.clone());
+            preflight_check(&base, &resolved, &sandbox_config);
         }
     }
 
     if command.is_some() {
-        eprintln!("[cato] Running command...");
+        cato_log!(LogLevel::Normal, "[cato] Running command...");
     } else {
-        eprintln!("[cato] Entering sandbox... (type 'exit' to leave)");
+        cato_log!(LogLevel::Normal, "[cato] Entering sandbox... (type 'exit' to leave)");
     }
 
     // Set up signal handler for graceful cleanup
@@ -205,8 +219,34 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
         std::process::exit(130);
     }).ok();
 
+    // Start a watchdog (Verbose level — only prints if verbose/debug)
+    let watchdog = if command.is_some() {
+        let network_blocked = resolved.network.is_empty();
+        let has_allow_read = !resolved.allow_read.is_empty();
+        let log_level = crate::log::level();
+        Some(std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            if log_level >= LogLevel::Verbose {
+                eprintln!();
+                eprintln!("[cato] \x1b[33mStill running... if the command seems stuck:\x1b[0m");
+                if network_blocked {
+                    eprintln!("[cato]   \x1b[33m• Network is fully blocked. Add domains to network in .cato.toml\x1b[0m");
+                }
+                if !has_allow_read {
+                    eprintln!("[cato]   \x1b[33m• No host directories mounted. The tool may need auth config. Run: cato tool add <name>\x1b[0m");
+                }
+                eprintln!("[cato]   \x1b[33m• Press Ctrl+C to cancel\x1b[0m");
+            }
+        }))
+    } else {
+        None
+    };
+
     // Run the sandbox
     let exit_code = sandbox::runner::run(&resolved, &profile_path, command, env_vars);
+
+    // Cancel watchdog if command completed
+    drop(watchdog);
     let duration_secs = start_time.elapsed().as_secs();
 
     // Cleanup
@@ -214,13 +254,73 @@ pub fn run(command: Option<Vec<String>>, ephemeral: bool) {
     if ephemeral {
         let tmp = std::env::temp_dir().join(format!("cato-eph-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        eprintln!("[cato] Ephemeral workspace cleaned up.");
+        cato_log!(LogLevel::Normal, "[cato] Ephemeral workspace cleaned up.");
     }
 
     log_sandbox_event("sandbox_stop", &resolved, Some(&cmd_label), Some(exit_code), Some(duration_secs));
-    eprintln!("[cato] Sandbox session ended.");
+    cato_log!(LogLevel::Normal, "[cato] Sandbox session ended.");
 
     std::process::exit(exit_code);
+}
+
+/// Pre-flight checks: warn about common issues before entering sandbox.
+/// This helps non-technical users understand why a command might hang.
+fn preflight_check(
+    cmd_name: &str,
+    resolved: &sandbox::config::ResolvedConfig,
+    config: &sandbox::config::SandboxConfig,
+) {
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut warnings = Vec::new();
+
+    // Check if the tool is in the tools list
+    if !config.tools.is_empty() && !config.tools.iter().any(|t| t == cmd_name) {
+        warnings.push(format!(
+            "'{}' is not in tools list. Run: cato tool add {}", cmd_name, cmd_name
+        ));
+    }
+
+    // Check for config directory — tool may need auth
+    let config_dirs = [
+        home.join(format!(".{}", cmd_name)),
+        home.join(format!(".{}", cmd_name.to_lowercase())),
+        home.join(".config").join(cmd_name),
+    ];
+    let has_config = config_dirs.iter().any(|p| p.exists());
+    let config_bound = resolved.allow_read.iter().any(|p| {
+        config_dirs.iter().any(|d| p.contains(&d.to_string_lossy().to_string())
+            || p.contains(&format!("/.{}", cmd_name))
+            || p.contains(&format!("/.{}", cmd_name.to_lowercase())))
+    });
+
+    if has_config && !config_bound {
+        let found = config_dirs.iter().find(|p| p.exists()).unwrap();
+        let display = found.to_string_lossy().replace(&home.to_string_lossy().to_string(), "~");
+        warnings.push(format!(
+            "'{}' has config at {} but it's not in allow_read. \
+             The tool may fail to authenticate. Run: cato tool add {}",
+            cmd_name, display, cmd_name
+        ));
+    }
+
+    // Check network — if blocked, tool likely can't work
+    let network_blocked = resolved.network.is_empty();
+    if network_blocked {
+        warnings.push(format!(
+            "network is fully blocked. '{}' likely needs network access. \
+             Add domains to network in .cato.toml",
+            cmd_name
+        ));
+    }
+
+    // Print warnings (Verbose level)
+    if !warnings.is_empty() {
+        cato_log!(LogLevel::Verbose, "[cato] \x1b[33m⚠ Potential issues:\x1b[0m");
+        for w in &warnings {
+            cato_log!(LogLevel::Verbose, "[cato]   \x1b[33m• {}\x1b[0m", w);
+        }
+        eprintln!();
+    }
 }
 
 fn check_tools(tools: &[String]) -> Vec<String> {

@@ -11,6 +11,12 @@
 - [Network Filtering](network.md)
 - [Secrets & Tools](secrets-and-tools.md)
 
+## Use Cases
+
+- [Overview](use-cases/README.md)
+- [Claude Code](use-cases/claude-code.md)
+- [GitHub CLI](use-cases/github-cli.md)
+
 ## Design
 
 - [Security Model](security.md)

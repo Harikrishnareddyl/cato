@@ -69,8 +69,11 @@ fn run_macos(
     let zshrc_content = format!(
         "# Cato sandbox shell\n\
          [[ -f ~/.zshrc ]] && source ~/.zshrc 2>/dev/null\n\
-         PROMPT='%F{{yellow}}🔒 {}%f %~ $ '\n",
-        workspace_name
+         setopt PROMPT_SUBST\n\
+         _cato_rel() {{ local p=\"$PWD\"; local w=\"{ws}\"; if [[ \"$p\" == \"$w\" ]]; then echo \"\"; elif [[ \"$p\" == \"$w/\"* ]]; then echo \" ${{p#$w/}}\"; else echo \" $p\"; fi }}\n\
+         PROMPT='%F{{yellow}}🔒 {name}%f$(_cato_rel) $ '\n",
+        ws = resolved.workspace,
+        name = workspace_name,
     );
     let _ = std::fs::write(zdotdir.join(".zshrc"), &zshrc_content);
     cmd.env("ZDOTDIR", &zdotdir);
@@ -134,7 +137,7 @@ fn run_linux(
                     for i in 0..10 {
                         if Path::new(&socket_path).exists() {
                             ready = true;
-                            if std::env::var("CATO_DEBUG").is_ok() {
+                            if crate::log::level() >= crate::log::LogLevel::Debug {
                                 eprintln!("[cato] socat bridge ready after {} attempts", i + 1);
                             }
                             break;
@@ -228,7 +231,12 @@ fn run_linux(
 
     // Linux-specific: PS1 prompt
     let workspace_name = workspace_short_name(&resolved.workspace);
-    cmd.env("PS1", format!("🔒 {} \\w $ ", workspace_name));
+    // Bash: use PROMPT_COMMAND to compute relative path dynamically
+    cmd.env("CATO_WS", &resolved.workspace);
+    cmd.env("PROMPT_COMMAND", format!(
+        r#"_rel=""; case "$PWD" in "$CATO_WS") ;; "$CATO_WS/"*) _rel=" ${{PWD#$CATO_WS/}}";; *) _rel=" $PWD";; esac; PS1="🔒 {}$_rel $ ""#,
+        workspace_name
+    ));
 
     // LD_PRELOAD deny library — catches new files matching deny patterns
     // Look for libcato_deny.so next to the cato binary or in known paths
@@ -242,7 +250,7 @@ fn run_linux(
         if !resolved.deny_write.is_empty() {
             cmd.env("CATO_DENY_WRITE", resolved.deny_write.join(","));
         }
-        if std::env::var("CATO_DEBUG").is_ok() {
+        if crate::log::level() >= crate::log::LogLevel::Debug {
             eprintln!("[cato] LD_PRELOAD: {}", lib_path);
         }
     }
@@ -297,7 +305,7 @@ fn execute_cmd(
     command: &Option<Vec<String>>,
     shell: &str,
 ) -> i32 {
-    let debug = std::env::var("CATO_DEBUG").is_ok();
+    let debug = crate::log::level() >= crate::log::LogLevel::Debug;
     if debug {
         eprintln!("[cato] Running: {} -f {} {:?}", tool_name, profile_path.display(),
             command.as_ref().map(|c| c.join(" ")).unwrap_or_else(|| shell.to_string()));

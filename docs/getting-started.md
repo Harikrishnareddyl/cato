@@ -52,7 +52,7 @@ Secrets are stored on the host in `~/.cato/store.toml`. Inside the sandbox they 
 cato run
 ```
 
-You're now in an OS-enforced sandbox. Every process inside — your shell, any tool, any AI agent — is restricted.
+You're now in an OS-enforced sandbox. Everything inside — your shell, any tool, any process — is restricted.
 
 ### 5. Work normally
 
@@ -86,21 +86,20 @@ Host
               └── All child processes inherit restrictions
 ```
 
-The key insight: the sandbox doesn't care what's running inside. Human, AI agent, script — all get the same restrictions. No cooperation needed. No hooks to configure. Just `cato run`.
+The key insight: the sandbox doesn't care what's running inside. Scripts, tools, humans — all get the same restrictions. No cooperation needed. Just `cato run`.
 
-## Running AI Agents
+## Tools That Need Setup
+
+Some tools (AI coding assistants, CLIs with API access) need auth and network configuration to work inside the sandbox. See the [use case guides](../use-cases/) for step-by-step setup.
 
 ```bash
-# Run Claude inside the sandbox
-cato run -- claude "review this code and fix the bugs"
-
-# Or start an interactive sandbox and run agents inside
-cato run
-🔒 $ claude
-🔒 $ cursor
+cato tool add claude     # auto-detects config dirs
+cato secret put TOKEN    # store auth token
+# Add network domains to .cato.toml
+cato run -- claude "review this code"
 ```
 
-The agent can read/write workspace files, use registered tools, access allowed domains, and read injected secrets. It can't read `.env` files, access your home directory, or reach unauthorized networks.
+Any process inside the sandbox can read/write workspace files, use registered tools, access allowed domains, and read injected secrets. It can't read `.env` files, access your home directory, or reach unauthorized networks.
 
 ## Single Command Mode
 

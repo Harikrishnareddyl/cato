@@ -26,10 +26,19 @@ cato run --ephemeral -- npm test  # disposable + single command
 
 Environment variable `CATO_SANDBOX=1` is set inside the sandbox.
 
-Debug mode shows the generated Seatbelt profile:
+Control output verbosity:
 
 ```bash
-CATO_DEBUG=1 cato run
+cato run                        # normal (default) — start/stop summary
+CATO_LOG=quiet cato run         # silent — no cato output
+CATO_LOG=verbose cato run       # troubleshooting — blocked domains, warnings
+CATO_LOG=debug cato run         # full diagnostic — sandbox profile, proxy details
+```
+
+Or set in `.cato.toml`:
+```toml
+[sandbox.options]
+log_level = "verbose"
 ```
 
 ## `cato tool`
