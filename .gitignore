@@ -15,3 +15,6 @@
 .superpowers/
 /package.json
 /package-lock.json
+
+# Recording artifacts
+*.cast
