@@ -38,8 +38,9 @@ DATABASE_URL = { default = "postgres://localhost/mydb" }
 NODE_ENV = { default = "development" }
 
 [sandbox.options]
-ssh_agent = true
+# ssh_agent = true  # forwards your SSH keys
 allow_localhost = true
+# log_level = "normal"  # quiet(0) | normal(1) | verbose(2) | debug(3)
 ```
 
 ## Access Control Model
@@ -92,6 +93,18 @@ Wildcards supported: `"*.github.com"` matches `api.github.com`, `raw.github.com`
 
 Localhost is always allowed regardless of network config (controlled by `allow_localhost` option).
 
+### Host Paths (allow_read)
+
+Mount specific host directories into the sandbox. Used for tools that need access to their auth configs (e.g., `~/.claude/` for OAuth tokens, `~/.config/gh/` for GitHub CLI auth).
+
+```toml
+allow_read = ["~/.claude", "~/.config/gh"]
+```
+
+These are mounted read-write so tools can update their own state (session files, token refresh). `cato tool add <name>` auto-detects these directories for you.
+
+By default, the home directory is invisible inside the sandbox. `allow_read` creates targeted exceptions for specific paths without exposing everything.
+
 ## Precedence Summary
 
 | Layer | Default | Override |
@@ -110,7 +123,7 @@ deny_read = ["*.env", "*.pem", "*.key"]
 network = ["github.com", "registry.npmjs.org"]
 ```
 
-### Read-only reviewer (agent can read but not modify)
+### Read-only mode (can read but not modify)
 ```toml
 [sandbox]
 allow_write = ["/tmp"]
@@ -118,7 +131,7 @@ deny_read = ["*.env"]
 network = ["*"]
 ```
 
-### Strict scope (agent only edits specific files)
+### Strict scope (only specific files editable)
 ```toml
 [sandbox]
 allow_write = ["src/auth/", "tests/auth/", "/tmp"]
@@ -141,11 +154,43 @@ network = []
 | `allow_write` | `["{workspace}", "/tmp"]` | Paths where writes are allowed |
 | `deny_write` | `[]` | Patterns blocked from writing within allowed paths |
 | `deny_read` | `[]` | Patterns blocked from reading |
+| `allow_read` | `[]` | Host directories mounted into sandbox (for tool auth configs) |
 | `network` | `[]` (blocked) | Allowed domains. Empty = no network. `["*"]` = unrestricted |
 | `tools` | `[]` | Required tool binaries |
 | `secrets` | `{}` | Secrets injected as env vars |
-| `ssh_agent` | `false` | Forward SSH agent socket |
+| `ssh_agent` | `false` | Forward SSH agent socket (forwards your keys — use with caution) |
 | `allow_localhost` | `true` | Allow localhost connections |
+| `log_level` | `"normal"` | Log verbosity: `quiet`(0), `normal`(1), `verbose`(2), `debug`(3) |
+
+## Logging
+
+Control how much Cato prints to the terminal during sandbox sessions.
+
+```toml
+[sandbox.options]
+log_level = "normal"  # quiet(0) | normal(1) | verbose(2) | debug(3)
+```
+
+Override with environment variable (takes precedence over config):
+```bash
+CATO_LOG=verbose cato run -- npm test
+CATO_LOG=0 cato run -- node app.js     # numbers work too
+```
+
+| Level | What prints |
+|-------|-------------|
+| `quiet` / `0` | Nothing from cato. Only the command's own output. |
+| `normal` / `1` | Sandbox start/stop summary. **Default.** |
+| `verbose` / `2` | + blocked domain alerts, pre-flight warnings, stuck hints |
+| `debug` / `3` | + full sandbox profile, proxy details, exit codes |
+
+**When to use each:**
+- `quiet` — production/CI, scripting, or when cato output interferes with tool output
+- `normal` — daily use
+- `verbose` — troubleshooting why a tool isn't working inside the sandbox
+- `debug` — inspecting the generated sandbox profile
+
+Everything is always logged to the audit file (`~/.cato/audit.jsonl`) regardless of log level.
 
 ## Presets
 
@@ -192,8 +237,9 @@ tools = []  # auto-populated: git, node, npm, python3, cargo, etc.
 # DATABASE_URL = { default = "postgres://localhost/mydb" }
 
 [sandbox.options]
-ssh_agent = true
+# ssh_agent = true  # forwards your SSH keys
 allow_localhost = true
+# log_level = "normal"  # quiet(0) | normal(1) | verbose(2) | debug(3)
 ```
 
 ### `cato init --minimal` — Minimal
@@ -227,8 +273,9 @@ tools = []
 [sandbox.secrets]
 
 [sandbox.options]
-ssh_agent = true
+# ssh_agent = true  # forwards your SSH keys
 allow_localhost = true
+# log_level = "normal"  # quiet(0) | normal(1) | verbose(2) | debug(3)
 ```
 
 ### `cato init --strict` — Strict
@@ -268,8 +315,9 @@ tools = []
 [sandbox.secrets]
 
 [sandbox.options]
-ssh_agent = true
+# ssh_agent = true  # forwards your SSH keys
 allow_localhost = true
+# log_level = "normal"  # quiet(0) | normal(1) | verbose(2) | debug(3)
 ```
 
 ## Tips
@@ -277,6 +325,6 @@ allow_localhost = true
 - Commit `.cato.toml` to git — rules travel with the project
 - Use `cato status` to verify tools, secrets, and network readiness
 - Use `CATO_DEBUG=1 cato run` to inspect the generated sandbox profile
-- `deny_write = ["*.lock"]` prevents agents from modifying lockfiles
+- `deny_write = ["*.lock"]` prevents modifying lockfiles
 - Remove `{workspace}` from `allow_write` for a read-only sandbox
 - The presets are starting points — edit the generated file to fit your project

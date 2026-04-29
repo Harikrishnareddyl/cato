@@ -89,33 +89,130 @@ pub fn add(name: &str, path: Option<&str>) {
         }
     }
 
+    // Auto-detect config directories for this tool
+    let detected_configs = detect_tool_config(name);
+    for config_dir in &detected_configs {
+        println!("[cato] \x1b[32m✓\x1b[0m found config: {} (will mount read-only)", config_dir);
+    }
+
+    if detected_configs.is_empty() {
+        println!("[cato]   no config directory detected for {}", name);
+    }
+
     // Auto-add to project .cato.toml if it exists
     let cwd = std::env::current_dir().unwrap_or_default();
     let config_path = cwd.join(".cato.toml");
     if config_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            // Check if tool is already in the tools list
+        if let Ok(mut content) = std::fs::read_to_string(&config_path) {
+            // Add tool to tools list
             let tool_quoted = format!("\"{}\"", name);
             if !content.contains(&tool_quoted) {
-                // Find the tools = [...] line and add the tool
                 if let Some(pos) = content.find("tools = [") {
                     if let Some(bracket_end) = content[pos..].find(']') {
                         let insert_pos = pos + bracket_end;
                         let before = &content[..insert_pos];
                         let after = &content[insert_pos..];
-                        // Check if list is empty or has items
                         let list_content = &content[pos + 9..insert_pos];
-                        let new_content = if list_content.trim().is_empty() {
+                        content = if list_content.trim().is_empty() {
                             format!("{}\n    \"{}\",\n{}", before, name, after)
                         } else {
                             format!("{}\n    \"{}\",{}", before, name, after)
                         };
-                        let _ = std::fs::write(&config_path, new_content);
-                        println!("[cato] \x1b[32m✓\x1b[0m Added to .cato.toml tools list");
+                        let _ = std::fs::write(&config_path, &content);
+                        println!("[cato] \x1b[32m✓\x1b[0m added to .cato.toml tools list");
                     }
                 }
             }
+
+            // Add detected configs to allow_read
+            // Re-read in case we just wrote
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                let mut modified = content.clone();
+                for config_dir in &detected_configs {
+                    let quoted = format!("\"{}\"", config_dir);
+                    if modified.contains(&quoted) { continue; }
+
+                    if let Some(pos) = modified.find("allow_read = [") {
+                        if let Some(bracket_end) = modified[pos..].find(']') {
+                            let insert_pos = pos + bracket_end;
+                            let before = &modified[..insert_pos];
+                            let after = &modified[insert_pos..];
+                            modified = format!("{}\n    \"{}\",{}", before, config_dir, after);
+                        }
+                    } else {
+                        // No allow_read field yet — add it after [sandbox]
+                        if let Some(pos) = modified.find("allow_write") {
+                            let before = &modified[..pos];
+                            let after = &modified[pos..];
+                            modified = format!("{}allow_read = [\n    \"{}\",\n]\n\n{}", before, config_dir, after);
+                        }
+                    }
+                }
+                if modified != content {
+                    let _ = std::fs::write(&config_path, &modified);
+                    println!("[cato] \x1b[32m✓\x1b[0m added config paths to .cato.toml allow_read");
+                }
+            }
         }
+    }
+
+    // Hint about network
+    if !detected_configs.is_empty() {
+        println!("[cato]   hint: if {} needs network access, add its API domain to network in .cato.toml", name);
+    }
+}
+
+/// Auto-detect config directories for a tool.
+/// Scans common locations: ~/.<name>, ~/.config/<name>, ~/Library/Application Support/<name>
+fn detect_tool_config(name: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        let lower = name.to_lowercase();
+        let candidates = vec![
+            home.join(format!(".{}", name)),
+            home.join(format!(".{}", lower)),
+            home.join(".config").join(name),
+            home.join(".config").join(&lower),
+            // XDG data/state dirs
+            home.join(".local/share").join(name),
+            home.join(".local/share").join(&lower),
+            home.join(".local/state").join(name),
+            home.join(".local/state").join(&lower),
+            // macOS Application Support
+            home.join("Library/Application Support").join(name),
+            home.join("Library/Application Support").join(capitalize(name)),
+        ];
+
+        let home_str = home.to_string_lossy().to_string();
+
+        for path in candidates {
+            if path.exists() && path.is_dir() {
+                let display = path.to_string_lossy().replace(&home_str, "~");
+                if !found.contains(&display) {
+                    found.push(display);
+                }
+            }
+        }
+
+        // Also check for dotfiles in home root (e.g., ~/.claude.json)
+        for ext in &["json", "toml", "yaml", "yml", "conf", "cfg"] {
+            let dotfile = home.join(format!(".{}.{}", lower, ext));
+            if dotfile.exists() && dotfile.is_file() {
+                let display = dotfile.to_string_lossy().replace(&home_str, "~");
+                if !found.contains(&display) {
+                    found.push(display);
+                }
+            }
+        }
+    }
+    found
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
 

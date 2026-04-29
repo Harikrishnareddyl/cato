@@ -30,7 +30,7 @@ pause() { sleep "${1:-1.5}"; }
 
 clear
 echo ""
-echo "  Cato - Agent-agnostic sandbox"
+echo "  Cato - Portable sandbox"
 echo "  One config file, any process, anywhere"
 echo ""
 pause 2
@@ -104,7 +104,7 @@ pause 2
 # Done
 echo ""
 echo ""
-printf "  ${GREEN}Done. Same rules for any agent, any tool, any person.${RESET}\n"
+printf "  ${GREEN}Done. Same rules for any tool, any script, any person.${RESET}\n"
 printf "  ${GREEN}github.com/Harikrishnareddyl/cato${RESET}\n"
 echo ""
 pause 3

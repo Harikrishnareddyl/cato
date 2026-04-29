@@ -212,6 +212,8 @@ fn generate_config(level: &str, detected: &ProjectDetection) -> String {
     lines.push("[sandbox.options]".to_string());
     lines.push("# ssh_agent = true  # enable if you need git push via SSH (forwards your keys)".to_string());
     lines.push("allow_localhost = true".to_string());
+    lines.push("# log_level = \"normal\"  # quiet(0) | normal(1) | verbose(2) | debug(3)".to_string());
+    lines.push("# Override with env var: CATO_LOG=verbose cato run ...".to_string());
 
     // Strict additions
     if level == "strict" {

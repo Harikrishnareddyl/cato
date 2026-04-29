@@ -26,10 +26,19 @@ cato run --ephemeral -- npm test  # disposable + single command
 
 Environment variable `CATO_SANDBOX=1` is set inside the sandbox.
 
-Debug mode shows the generated Seatbelt profile:
+Control output verbosity:
 
 ```bash
-CATO_DEBUG=1 cato run
+cato run                        # normal (default) — start/stop summary
+CATO_LOG=quiet cato run         # silent — no cato output
+CATO_LOG=verbose cato run       # troubleshooting — blocked domains, warnings
+CATO_LOG=debug cato run         # full diagnostic — sandbox profile, proxy details
+```
+
+Or set in `.cato.toml`:
+```toml
+[sandbox.options]
+log_level = "verbose"
 ```
 
 ## `cato tool`
@@ -75,8 +84,26 @@ Reports: config status, tool availability, secret resolution, SSH agent, audit s
 View the sandbox event log (`~/.cato/audit.jsonl`).
 
 ```bash
-cato audit                # last 20 entries
+cato audit                # last 20 entries (current project)
 cato audit -n 50          # last 50 entries
+cato audit --all          # all projects
 cato audit -f             # follow in real-time
 cato audit -q myproject   # filter by keyword
 ```
+
+### Live monitoring
+
+While a sandbox is running, open a second terminal to watch events in real time:
+
+```bash
+# All events
+cato audit -f
+
+# Only blocked network requests
+cato audit -f -q network_denied
+
+# Only session start/stop
+cato audit -f -q sandbox_
+```
+
+This keeps the sandbox terminal clean while you monitor what's happening in another.

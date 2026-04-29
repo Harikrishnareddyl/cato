@@ -1,5 +1,6 @@
 mod audit;
 mod commands;
+pub mod log;
 mod sandbox;
 
 use clap::{Parser, Subcommand};

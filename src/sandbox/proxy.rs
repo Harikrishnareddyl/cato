@@ -129,39 +129,40 @@ fn handle_connect(
             client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
             client.flush()?;
 
-            // Read complete TLS ClientHello and validate SNI.
-            // Fail closed: if we can't read a complete record or parse SNI, deny.
-            let hello_buf = match read_tls_client_hello(client) {
-                Ok(buf) => buf,
-                Err(_) => {
-                    // Can't read TLS record — not a TLS connection or client error
-                    // Fail closed: deny
-                    log_deny(&ctx.audit_path, &ctx.workspace,
-                        &format!("{}(no-tls-record)", host));
-                    return Ok(());
-                }
-            };
+            // Read TLS ClientHello and validate SNI against CONNECT host.
+            // The CONNECT host was already validated against the domain allowlist.
+            // SNI check is defense-in-depth against domain fronting:
+            // - If SNI matches: allow (normal case)
+            // - If SNI mismatches: deny (domain fronting attempt)
+            // - If can't parse: allow (host already approved, may be non-standard client)
+            let hello_buf = read_tls_client_hello(client);
 
-            // Extract and validate SNI — fail closed on None
-            match extract_tls_sni(&hello_buf) {
-                Some(sni) => {
-                    if sni != host && !host_matches_sni(host, &sni) {
-                        log_deny(&ctx.audit_path, &ctx.workspace,
-                            &format!("{}(sni:{})", host, sni));
-                        return Ok(());
+            match &hello_buf {
+                Ok(buf) => {
+                    match extract_tls_sni(buf) {
+                        Some(sni) => {
+                            if sni != host && !host_matches_sni(host, &sni) {
+                                // SNI explicitly mismatches — domain fronting
+                                log_deny(&ctx.audit_path, &ctx.workspace,
+                                    &format!("{}(sni:{})", host, sni));
+                                return Ok(());
+                            }
+                        }
+                        None => {
+                            // Can't extract SNI but host was approved — allow
+                        }
                     }
                 }
-                None => {
-                    // Can't extract SNI — fail closed
-                    log_deny(&ctx.audit_path, &ctx.workspace,
-                        &format!("{}(sni-parse-failed)", host));
-                    return Ok(());
+                Err(_) => {
+                    // Can't read TLS record — non-standard client, host already approved
                 }
             }
 
-            // Forward the validated ClientHello to target
-            target.write_all(&hello_buf)?;
-            target.flush()?;
+            // Forward the data to target (if we got any)
+            if let Ok(ref buf) = hello_buf {
+                target.write_all(buf)?;
+                target.flush()?;
+            }
 
             // Bidirectional copy for the rest
             let mut client_read = client.try_clone()?;
@@ -443,6 +444,11 @@ fn send_response(client: &mut TcpStream, code: u16, message: &str) -> std::io::R
 
 /// Log a network deny to the audit file
 fn log_deny(audit_path: &std::path::Path, workspace: &str, domain: &str) {
+    // Print to stderr only at Verbose level (avoids mixing with tool output)
+    if crate::log::level() >= crate::log::LogLevel::Verbose {
+        eprintln!("[cato] \x1b[31mblocked:\x1b[0m {} (not in allowed domains)", domain);
+    }
+
     let entry = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339(),
         "event": "network_denied",

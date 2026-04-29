@@ -158,6 +158,28 @@ pub fn generate(config: &ResolvedConfig, tool_paths: &[String]) -> String {
     p.push("".into());
 
     // ═══════════════════════════════════════════════════════
+    // allow_read — host paths mounted into sandbox (read-write)
+    // Placed AFTER home section so these override home read-only rules
+    // Tools need read-write for auth tokens, session state, etc.
+    // ═══════════════════════════════════════════════════════
+    if !config.allow_read.is_empty() {
+        p.push("; Host paths (tool configs — read-write)".into());
+        for path in &config.allow_read {
+            let p_path = std::path::Path::new(path);
+            if p_path.exists() {
+                if p_path.is_dir() {
+                    p.push(format!("(allow file-read* (subpath \"{}\"))", path));
+                    p.push(format!("(allow file-write* (subpath \"{}\"))", path));
+                } else {
+                    p.push(format!("(allow file-read* (literal \"{}\"))", path));
+                    p.push(format!("(allow file-write* (literal \"{}\"))", path));
+                }
+            }
+        }
+        p.push("".into());
+    }
+
+    // ═══════════════════════════════════════════════════════
     // deny_write — block writes to patterns within allow_write paths
     // Deny overrides allow (placed after allow rules)
     // ═══════════════════════════════════════════════════════

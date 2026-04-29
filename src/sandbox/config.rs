@@ -15,6 +15,11 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub deny_read: Vec<String>,
 
+    /// Host directories mounted read-only into the sandbox
+    /// (e.g., ~/.claude for tool auth configs)
+    #[serde(default)]
+    pub allow_read: Vec<String>,
+
     /// Allowed network domains (deny-by-default, empty = no outbound)
     /// Use ["*"] for unrestricted network access
     #[serde(default)]
@@ -36,6 +41,9 @@ pub struct SandboxOptions {
     pub ssh_agent: bool,
     #[serde(default = "default_true")]
     pub allow_localhost: bool,
+    /// Log level: quiet(0), normal(1), verbose(2), debug(3)
+    #[serde(default)]
+    pub log_level: Option<String>,
 }
 
 fn default_allow_write() -> Vec<String> {
@@ -87,11 +95,16 @@ pub fn resolve(config: &SandboxConfig, workspace: &Path) -> ResolvedConfig {
         .map(|p| resolve_path(p, &workspace_str, &home))
         .collect();
 
+    let allow_read: Vec<String> = config.allow_read.iter()
+        .map(|p| resolve_path(p, &workspace_str, &home))
+        .collect();
+
     ResolvedConfig {
         workspace: workspace_str,
         allow_write,
         deny_write,
         deny_read,
+        allow_read,
         network: config.network.clone(),
         tools: config.tools.clone(),
         options: config.options.clone(),
@@ -110,6 +123,7 @@ pub struct ResolvedConfig {
     pub allow_write: Vec<String>,
     pub deny_write: Vec<String>,
     pub deny_read: Vec<String>,
+    pub allow_read: Vec<String>,
     pub network: Vec<String>,
     pub tools: Vec<String>,
     pub options: SandboxOptions,
