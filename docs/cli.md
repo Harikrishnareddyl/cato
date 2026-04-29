@@ -84,8 +84,26 @@ Reports: config status, tool availability, secret resolution, SSH agent, audit s
 View the sandbox event log (`~/.cato/audit.jsonl`).
 
 ```bash
-cato audit                # last 20 entries
+cato audit                # last 20 entries (current project)
 cato audit -n 50          # last 50 entries
+cato audit --all          # all projects
 cato audit -f             # follow in real-time
 cato audit -q myproject   # filter by keyword
 ```
+
+### Live monitoring
+
+While a sandbox is running, open a second terminal to watch events in real time:
+
+```bash
+# All events
+cato audit -f
+
+# Only blocked network requests
+cato audit -f -q network_denied
+
+# Only session start/stop
+cato audit -f -q sandbox_
+```
+
+This keeps the sandbox terminal clean while you monitor what's happening in another.

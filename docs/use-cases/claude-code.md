@@ -108,15 +108,37 @@ cato run
 - If using `CLAUDE_CODE_OAUTH_TOKEN`, make sure it's declared in `[sandbox.secrets]`.
 
 **Command hangs with no output**
-- Run with verbose logging to see blocked domains and warnings:
+- Open a second terminal and watch the audit log in real time:
   ```bash
-  CATO_LOG=verbose cato run -- claude -p "hi"
+  cato audit -f
   ```
-- Check `[cato] blocked:` messages — a required domain might be missing from the network list.
+  This shows blocked domains, session events, and network denials as they happen — without mixing with Claude's output.
+- Filter for blocked domains only:
+  ```bash
+  cato audit -f -q network_denied
+  ```
 - Make sure `cato tool add claude` was run to mount config directories.
+- Add any blocked domains shown in the audit log to your `.cato.toml` network list.
 
 **"Warning: no stdin data received"**
 - Normal for non-interactive mode. Claude waits briefly for piped input then proceeds.
+
+## Monitoring the sandbox
+
+While Claude is running inside the sandbox, open a separate terminal to monitor what's happening:
+
+```bash
+# Watch all events in real time
+cato audit -f
+
+# Watch only blocked network requests
+cato audit -f -q network_denied
+
+# Watch only this project's events
+cato audit -f    # (automatically filters to current directory)
+```
+
+This is the cleanest way to debug — Claude's output stays clean in one terminal, sandbox events stream in another.
 
 ## Example .cato.toml
 
